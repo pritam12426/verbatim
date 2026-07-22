@@ -1,3 +1,6 @@
+#ifndef VERBATIM_COMMAND_LINE_H
+#define VERBATIM_COMMAND_LINE_H
+
 /*
  * command_line.h — Native Objective-C command-line argument parsing
  *
@@ -20,6 +23,7 @@
  */
 
 #import <Foundation/Foundation.h>
+
 #import "log.h"
 
 // Program version string, printed by -V/--version.
@@ -32,16 +36,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface CommandLineArguments : NSObject
 
-@property (nonatomic, copy) NSString *host;      // default: 127.0.0.1
-@property (nonatomic) unsigned short  port;      // default: 5959
-@property (nonatomic) float           rate;      // default: 175
-@property (nonatomic, copy) NSString *logLevel;  // default: "info"
+@property(nonatomic, copy) NSString *host;      // default: 127.0.0.1
+@property(nonatomic) unsigned short  port;      // default: 5959
+@property(nonatomic) float           rate;      // default: 175
+@property(nonatomic, copy) NSString *logLevel;  // default: "info"
 
 // Parses argv (as passed to main). Returns nil (with an error + usage
 // message printed to stderr) if parsing fails. -h/--help and -V/--version
 // print their message and call exit() directly with status 0, so they
 // never return to the caller — only genuine parse errors return nil.
-+ (nullable instancetype)parseArgc:(int)argc argv:(char * const _Nonnull *)argv;
++ (nullable instancetype)parseArgc:(int)argc argv:(char *const _Nonnull *)argv;
 
 // Converts the parsed logLevel string ("off|fatal|error|warn|info|debug|trace")
 // into a LogLevel value from log.h. Returns NO if the string is not recognised.
@@ -56,3 +60,5 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
+
+#endif /* VERBATIM_COMMAND_LINE_H */

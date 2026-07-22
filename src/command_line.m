@@ -5,6 +5,7 @@
  */
 
 #import "command_line.h"
+
 #import "project_config.h"
 
 // Default values
@@ -18,12 +19,14 @@
 - (instancetype)init
 {
 	self = [super init];
+
 	if (self) {
 		_host     = DEFAULT_HOST;
 		_port     = DEFAULT_PORT;
 		_rate     = DEFAULT_RATE;
 		_logLevel = DEFAULT_LOG_LEVEL;
 	}
+
 	return self;
 }
 
@@ -35,11 +38,13 @@
                value:(NSString *_Nullable *_Nonnull)outValue
 {
 	NSRange eq = [token rangeOfString:@"="];
+
 	if (eq.location == NSNotFound) {
 		*outName  = token;
 		*outValue = nil;
 		return NO;
 	}
+
 	*outName  = [token substringToIndex:eq.location];
 	*outValue = [token substringFromIndex:eq.location + 1];
 	return YES;
@@ -48,8 +53,7 @@
 + (void)printUsage:(const char *)progName
 {
 	fprintf(stderr,
-	        "Usage: " MAIN_BINARY " [OPTIONS]\n"
-	        MAIN_BINARY " - " PROJECT_SHORT_DESC "\n"
+	        "Usage: " MAIN_BINARY " [OPTIONS]\n" MAIN_BINARY " - " PROJECT_SHORT_DESC "\n"
 	        "\n"
 	        "Options:\n"
 	        "  -H, --host=HOST         Host to bind to (default: 127.0.0.1)\n"
@@ -59,9 +63,7 @@
 	        "  -h, --help              Print this help message\n"
 	        "  -V, --version           Print version information\n"
 	        "\n"
-	        "Report bugs to: " PROJECT_HOMEPAGE_URL "/issues\n"
-	        AUTH_MESSAGE "\n"
-	);
+	        "Report bugs to: " PROJECT_HOMEPAGE_URL "/issues\n" AUTH_MESSAGE "\n");
 }
 
 + (void)printVersion:(const char *)progName
@@ -148,7 +150,7 @@
 			}
 
 			args.port = (unsigned short) strtoul([value UTF8String], NULL, 10);
-		} else if ([name isEqualToString:@"-R"] ||[name isEqualToString:@"--rate"]) {
+		} else if ([name isEqualToString:@"-R"] || [name isEqualToString:@"--rate"]) {
 			NSString *value = [self valueForOpt:name
 			                        inlineValue:inlineValue
 			                               argv:argv
@@ -205,12 +207,15 @@
 	});
 
 	NSNumber *value = map[lower];
+
 	if (!value) {
 		return NO;
 	}
+
 	if (outLevel) {
 		*outLevel = (LogLevel)[value integerValue];
 	}
+
 	return YES;
 }
 

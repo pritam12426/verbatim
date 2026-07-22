@@ -16,22 +16,22 @@
  * also replaces the placeholder main.m stub that only demonstrated
  * command_line.h/log.h wiring; this is the real thing, also starting the
  * HTTP server and entering the run loop.
+ *
+ * This version uses ObjC ServerConfig object (allocated on the heap)
+ * instead of a C struct.
  */
 
-#import <Foundation/Foundation.h>
-
-#include <pthread.h>
-
-#ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
-#endif
+#import  <Foundation/Foundation.h>
+#include <pthread.h>
 
 #import "command_line.h"
 #import "http_server.h"
 #import "log.h"
 
-static void *server_thread_fn(void *arg) {
-	const ServerConfig *config = (const ServerConfig *)arg;
+static void *server_thread_fn(void *arg)
+{
+	ServerConfig *config = (__bridge ServerConfig *) arg;
 	http_server_run(config); /* never returns on success */
 	LOG_FATAL(@"http server thread exited unexpectedly");
 	exit(1);
@@ -70,33 +70,25 @@ int main(int argc, char *argv[])
 		         args.rate,
 		         args.logLevel);
 
-		// 4. Build the ServerConfig the HTTP layer needs. `static` so it
-		//    outlives main() for as long as the server thread runs, which
-		//    is forever; `config.host` points at args.host's own UTF8
-		//    buffer, which stays valid because `args` itself is kept
-		//    alive by this scope never actually being torn down (the run
-		//    loop below blocks forever).
-		static ServerConfig config;
-		config.host        = [args.host UTF8String];
-		config.port        = args.port;
-		config.default_rate = args.rate;
+		// 4. Build the ServerConfig the HTTP layer needs.  Heap-allocated
+		//    so it outlives main() for as long as the server thread runs.
+		ServerConfig *config = [[ServerConfig alloc] init];
+		config.host          = args.host;
+		config.port          = args.port;
+		config.defaultRate   = args.rate;
 
 		// 5. Run the HTTP server on its own thread; the main thread is
 		//    reserved for the run loop below.
 		pthread_t server_thread;
-		if (pthread_create(&server_thread, NULL, server_thread_fn, &config) != 0) {
+		if (pthread_create(&server_thread, NULL, server_thread_fn, (__bridge void *) config) != 0) {
 			LOG_FATAL(@"could not start HTTP server thread");
 			return EXIT_FAILURE;
 		}
 		pthread_detach(server_thread);
 
-#ifdef __APPLE__
-		LOG_DEBUG(@"entering CFRunLoopRun() — blocking main thread for NSSpeechSynthesizer callbacks");
+		LOG_DEBUG(
+		    @"entering CFRunLoopRun() — blocking main thread for NSSpeechSynthesizer callbacks");
 		CFRunLoopRun();
-#else
-		LOG_WARN(@"no CoreFoundation run loop on this platform — blocking main thread with pause()");
-		for (;;) pause();
-#endif
 	}
 
 	return EXIT_SUCCESS;

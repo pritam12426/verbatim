@@ -21,7 +21,7 @@ MFLAGS +=  -Wshadow -Wconversion \
            -Wstrict-prototypes -Wmissing-prototypes
 
 # Common flags
-MFLAGS += -Isrc -fobjc-arc -Wall -Wextra
+MFLAGS += -Isrc -fobjc-arc
 LDLIBS += -lpthread -framework Foundation -framework AppKit
 
 # Build options (set via command line, e.g. `make O_DEBUG=1`)

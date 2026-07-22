@@ -1,28 +1,30 @@
-/*
- * voices.h — voice listing, backing GET /voices.
- *
- * Voice *resolution* (matching a TTS-Voice header value to the identifier
- * NSSpeechSynthesizer actually needs) lives in speech_bridge.m instead,
- * since it needs NSSpeechSynthesizer.availableVoices — the native API,
- * not `say`'s text output. This module only needs to shell out and parse,
- * so it stays close to plain C with no AppKit dependency.
- */
+#ifndef _VERBATIM_VOICES_H_
+#define _VERBATIM_VOICES_H_
 
-#ifndef VERBATIM_VOICES_H
-#define VERBATIM_VOICES_H
 
-#include <stddef.h>
+#import <Foundation/Foundation.h>
 
-typedef struct {
-	char name[128];
-	char language[32];
-} VoiceInfo;
+NS_ASSUME_NONNULL_BEGIN
 
-/* Shells out to `say -v '?'` and parses its output (format verified stable
- * — see voices.m). Returns a malloc'd array of *count entries; caller must
- * free() it. Returns NULL and sets *count = 0 on failure. Cached after the
- * first successful call for the process lifetime, same as the Swift
- * version. */
-VoiceInfo *voices_list(size_t *count);
+// ---------------------------------------------------------------------------
+// VoiceInfo — a single voice entry from `say -v '?'`
+// ---------------------------------------------------------------------------
 
-#endif /* VERBATIM_VOICES_H */
+@interface                           VoiceInfo : NSObject
+@property(nonatomic, copy) NSString *name;
+@property(nonatomic, copy) NSString *language;
+@end
+
+// ---------------------------------------------------------------------------
+// voicesList — backed by GET /voices
+//
+// Shells out to `say -v '?'` on the first call, then returns the cached
+// result for the process lifetime.
+// ---------------------------------------------------------------------------
+
+NSArray<VoiceInfo *> *voicesList(void);
+
+NS_ASSUME_NONNULL_END
+
+
+#endif  // _VERBATIM_VOICES_H_

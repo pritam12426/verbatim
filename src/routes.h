@@ -1,13 +1,27 @@
-#ifndef VERBATIM_ROUTES_H
-#define VERBATIM_ROUTES_H
+#ifndef _VERBATIM_ROUTES_H_
+#define _VERBATIM_ROUTES_H_
 
-#include "http_server.h"
+#import "http_server.h"
 
-/* Each handler writes its full response directly to fd. */
-void route_speak(int fd, const HttpRequest *req, const ServerConfig *config, const char *client_ip);
-void route_stop(int fd, const HttpRequest *req, const char *client_ip);
-void route_status(int fd, const HttpRequest *req, const char *client_ip);
-void route_voices(int fd, const HttpRequest *req, const char *client_ip);
-void route_not_found(int fd);
+NS_ASSUME_NONNULL_BEGIN
 
-#endif /* VERBATIM_ROUTES_H */
+@interface Routes : NSObject
+
++ (void)speakWithFD:(int)fd
+            request:(HttpRequest *)req
+             config:(ServerConfig *)config
+           clientIP:(NSString *)clientIP;
+
++ (void)stopWithFD:(int)fd request:(HttpRequest *)req clientIP:(NSString *)clientIP;
+
++ (void)statusWithFD:(int)fd request:(HttpRequest *)req clientIP:(NSString *)clientIP;
+
++ (void)voicesWithFD:(int)fd request:(HttpRequest *)req clientIP:(NSString *)clientIP;
+
++ (void)notFoundWithFD:(int)fd;
+
+@end
+
+NS_ASSUME_NONNULL_END
+
+#endif  // _VERBATIM_ROUTES_H_

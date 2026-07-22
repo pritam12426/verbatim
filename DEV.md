@@ -1,8 +1,8 @@
 # DEV.md — Developer Guide
 
 > High-level orientation for working on `verbatim`. For the full module-by-module
-> mind map, see [`PROJECT_BRIEF.md`](./PROJECT_BRIEF.md). For the HTTP API as a
-> consumer, see [`README.md`](./README.md).
+> mind map, see [`PROJECT_BRIEF.md`](PROJECT_BRIEF.md). For the HTTP API as a
+> consumer, see [`README.md`](README.md).
 
 ---
 

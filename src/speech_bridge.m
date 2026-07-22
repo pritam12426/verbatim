@@ -1,5 +1,5 @@
 /*
- * speech_bridge.m — plain Objective-C implementation of speech_bridge.h.
+ * speech_bridge.m — ObjC implementation of speech_bridge.h.
  *
  * This is a direct behavioral port of the old speech_bridge.mm, which was
  * itself a port of SpeechEngine.swift: same engine (NSSpeechSynthesizer),
@@ -23,117 +23,108 @@
  * sender !== guard, voice resolution via NSSpeechSynthesizer.availableVoices
  * — is unchanged from the proven .mm logic.
  *
- * NOTE: unlike http_server.m/routes.m/voices.m/log.m (all compiled and
- * exercised end-to-end against curl on Linux via a mock backend during
- * development), this file cannot be compiled or tested outside macOS —
- * there is no AppKit here. It's carefully ported from the proven
- * NSSpeechSynthesizer logic and the ObjC method signatures are the same
- * long-standing ones used throughout this project's history, but treat
- * this specific file as the one that most needs a real build to confirm.
+ * NOTE: unlike http_server.m/routes.m/voices.m/log.m, this file cannot
+ * be compiled or tested outside macOS — there is no AppKit here. It's
+ * carefully ported from the proven NSSpeechSynthesizer logic and the ObjC
+ * method signatures are the same long-standing ones used throughout this
+ * project's history, but treat this specific file as the one that most
+ * needs a real build to confirm.
+ *
+ * This version replaces the C struct VerbatimSession with an @interface
+ * and the C functions with class methods on SpeechBridge.
  */
 
-#import <AppKit/AppKit.h>
+#include "speech_bridge.h"
 
+#import <AppKit/AppKit.h>
 #include <string.h>
 
 #include "log.h"
-#include "speech_bridge.h"
 
-/* ---- session: the queue a session's C-side consumer pulls from ---- */
+// ---------------------------------------------------------------------------
+// VerbatimEventQueue — internal, owns the push/pull queue
+// ---------------------------------------------------------------------------
 
-@interface VerbatimEventQueue : NSObject
-@property (nonatomic, strong) NSCondition *condition;
-@property (nonatomic, strong) NSMutableArray<NSString *> *lines;
-@property (nonatomic) BOOL done;
+@interface                                               VerbatimEventQueue : NSObject
+@property(nonatomic, strong) NSCondition                *condition;
+@property(nonatomic, strong) NSMutableArray<NSString *> *lines;
+@property(nonatomic) BOOL                                done;
 @end
 
 @implementation VerbatimEventQueue
-- (instancetype)init {
+- (instancetype)init
+{
 	self = [super init];
 	if (self) {
 		_condition = [[NSCondition alloc] init];
-		_lines = [NSMutableArray array];
-		_done = NO;
+		_lines     = [NSMutableArray array];
+		_done      = NO;
 	}
 	return self;
 }
 @end
 
-/* VerbatimSession is declared (but left opaque) in speech_bridge.h; the
- * real definition lives here, same as the old .mm file's struct did.
- *
- * `queue` is a `void *` rather than a plain `VerbatimEventQueue *`
- * because ARC forbids owning Objective-C pointers as members of a C
- * struct — there's no way for ARC to know when a malloc'd struct is
- * freed, so it can't manage the retain/release for us. Instead the
- * pointer is manually retained via CFBridgingRetain() at creation and
- * released via CFBridgingRelease() at destruction — the standard idiom
- * for handing an ARC object across a plain-C-lifetime boundary — and
- * bridged back to an ObjC reference (non-owning, since we already own it
- * manually) wherever it's used. */
-struct VerbatimSession {
-	void *queue;
-};
+// ---------------------------------------------------------------------------
+// VerbatimSession — public @implementation
+// ---------------------------------------------------------------------------
 
-VerbatimSession *verbatim_session_create(void) {
-	VerbatimSession *session = (VerbatimSession *)malloc(sizeof(VerbatimSession));
-	if (!session) return NULL;
-	VerbatimEventQueue *queue = [[VerbatimEventQueue alloc] init];
-	session->queue = (void *)CFBridgingRetain(queue); /* +1, ours to release */
-	return session;
+@implementation VerbatimSession {
+	VerbatimEventQueue *_queue;
 }
 
-void verbatim_session_destroy(VerbatimSession *session) {
-	if (!session) return;
-	CFBridgingRelease(session->queue); /* balances the +1 from create() */
-	free(session);
+- (instancetype)init
+{
+	self = [super init];
+	if (self) {
+		_queue = [[VerbatimEventQueue alloc] init];
+	}
+	return self;
 }
 
-static void push_event(VerbatimSession *session, NSString *line, BOOL terminal) {
-	if (!session) return;
-	VerbatimEventQueue *queue = (__bridge VerbatimEventQueue *)session->queue;
-	[queue.condition lock];
-	[queue.lines addObject:line];
-	if (terminal) queue.done = YES;
-	[queue.condition signal];
-	[queue.condition unlock];
-}
-
-size_t verbatim_next_event(VerbatimSession *session, char *buf, size_t buflen) {
-	VerbatimEventQueue *queue = (__bridge VerbatimEventQueue *)session->queue;
-	[queue.condition lock];
-	while (queue.lines.count == 0 && !queue.done) {
-		[queue.condition wait];
+- (NSString *)nextEvent
+{
+	[_queue.condition lock];
+	while (_queue.lines.count == 0 && !_queue.done) {
+		[_queue.condition wait];
 	}
 
-	if (queue.lines.count > 0) {
-		NSString *line = queue.lines[0];
-		[queue.lines removeObjectAtIndex:0];
-		[queue.condition unlock];
-
-		const char *cstr = [line UTF8String];
-		size_t n = strlen(cstr);
-		if (n >= buflen) n = buflen - 1;
-		memcpy(buf, cstr, n);
-		buf[n] = '\0';
-		return n;
+	if (_queue.lines.count > 0) {
+		NSString *line = _queue.lines[0];
+		[_queue.lines removeObjectAtIndex:0];
+		[_queue.condition unlock];
+		return line;
 	}
 
-	[queue.condition unlock];
-	return 0; /* done, nothing left */
+	[_queue.condition unlock];
+	return nil;
 }
 
-/* ---- global engine state (single utterance at a time, same as before) ---- */
-/* Guarded by g_engine_lock throughout — this mirrors @MainActor's job of
- * serializing access in the Swift version. An NSLock does the same job
- * here as the old std::mutex did. */
+- (void)pushEvent:(NSString *)line terminal:(BOOL)terminal
+{
+	[_queue.condition lock];
+	[_queue.lines addObject:line];
+	if (terminal)
+		_queue.done = YES;
+	[_queue.condition signal];
+	[_queue.condition unlock];
+}
 
-static NSLock *g_engine_lock = nil;
-static NSSpeechSynthesizer *g_synth = nil;
-static id<NSSpeechSynthesizerDelegate> g_delegate = nil;
-static VerbatimSession *g_current_session = NULL;
+@end
 
-static NSLock *engine_lock(void) {
+// ---------------------------------------------------------------------------
+// SpeechBridge — global engine state
+//
+// Single utterance at a time, same as the Swift version's @MainActor
+// serialisation.  An NSLock does the same job as the old std::mutex.
+// ---------------------------------------------------------------------------
+
+static NSLock                         *g_engine_lock     = nil;
+static NSSpeechSynthesizer            *g_synth           = nil;
+static id<NSSpeechSynthesizerDelegate> g_delegate        = nil;
+static VerbatimSession                *g_current_session = nil;
+
+static NSLock *engine_lock(void)
+{
 	static dispatch_once_t once;
 	dispatch_once(&once, ^{
 		g_engine_lock = [[NSLock alloc] init];
@@ -141,14 +132,19 @@ static NSLock *engine_lock(void) {
 	return g_engine_lock;
 }
 
+// ---------------------------------------------------------------------------
+// Delegate — receives willSpeakWord / didFinishSpeaking callbacks
+// ---------------------------------------------------------------------------
+
 @interface VerbatimSpeechDelegate : NSObject <NSSpeechSynthesizerDelegate>
 @end
 
 @implementation VerbatimSpeechDelegate
 
 - (void)speechSynthesizer:(NSSpeechSynthesizer *)sender
-             willSpeakWord:(NSRange)characterRange
-                  ofString:(NSString *)string {
+            willSpeakWord:(NSRange)characterRange
+                 ofString:(NSString *)string
+{
 	[engine_lock() lock];
 	if (sender != g_synth) {
 		LOG_TRACE(@"speech: willSpeakWord IGNORED (stray callback from superseded synth)");
@@ -156,19 +152,20 @@ static NSLock *engine_lock(void) {
 		return; /* stray callback from a superseded synth — ignore, same
 		         * guard as SpeechEngine.swift's `sender === synth` check */
 	}
-	LOG_TRACE(@"speech: willSpeakWord start=%ld length=%ld", (long)characterRange.location,
-	          (long)characterRange.length);
+	LOG_TRACE(@"speech: willSpeakWord start=%ld length=%ld",
+	          (long) characterRange.location,
+	          (long) characterRange.length);
 
 	NSString *json = [NSString stringWithFormat:@"{\"event\":\"word\",\"start\":%ld,\"length\":%ld}",
-	                                             (long)characterRange.location,
-	                                             (long)characterRange.length];
+	                                            (long) characterRange.location,
+	                                            (long) characterRange.length];
 	VerbatimSession *session = g_current_session;
 	[engine_lock() unlock];
-	push_event(session, json, NO);
+	[session pushEvent:json terminal:NO];
 }
 
-- (void)speechSynthesizer:(NSSpeechSynthesizer *)sender
-        didFinishSpeaking:(BOOL)finishedSpeaking {
+- (void)speechSynthesizer:(NSSpeechSynthesizer *)sender didFinishSpeaking:(BOOL)finishedSpeaking
+{
 	[engine_lock() lock];
 	if (sender != g_synth) {
 		LOG_TRACE(@"speech: didFinishSpeaking IGNORED (stray callback from superseded synth)");
@@ -177,34 +174,40 @@ static NSLock *engine_lock(void) {
 	}
 	LOG_INFO(@"speech: finished, completed=%@", finishedSpeaking ? @"true" : @"false");
 
-	NSString *json = [NSString stringWithFormat:@"{\"event\":\"finished\",\"completed\":%@}",
-	                                             finishedSpeaking ? @"true" : @"false"];
+	NSString        *json = [NSString stringWithFormat:@"{\"event\":\"finished\",\"completed\":%@}",
+                                                finishedSpeaking ? @"true" : @"false"];
 	VerbatimSession *session = g_current_session;
 
-	g_synth = nil;
-	g_delegate = nil;
-	g_current_session = NULL;
+	g_synth           = nil;
+	g_delegate        = nil;
+	g_current_session = nil;
 	[engine_lock() unlock];
 
-	push_event(session, json, YES);
+	[session pushEvent:json terminal:YES];
 }
 
 @end
 
+// ---------------------------------------------------------------------------
+// Voice resolution
+// ---------------------------------------------------------------------------
+
 /* Resolves a human-friendly voice name (matched case-insensitively against
  * the same display names GET /voices returns) to the NSSpeechSynthesizer
- * voice identifier. Uses NSVoiceName — the long-standing AppKit constant
- * for a voice's display name, predating Swift. Returns nil if not found
+ * voice identifier.  Uses NSVoiceName — the long-standing AppKit constant
+ * for a voice's display name, predating Swift.  Returns nil if not found
  * (caller falls back to the default voice). */
-static NSString *resolve_voice_name(const char *name) {
-	if (!name || name[0] == '\0') return nil;
+static NSString *resolve_voice_name(NSString *name)
+{
+	if (name.length == 0)
+		return nil;
 
-	NSString *target = [[NSString stringWithUTF8String:name] lowercaseString];
+	NSString            *target = [name lowercaseString];
 	NSArray<NSString *> *voices = [NSSpeechSynthesizer availableVoices];
 
 	for (NSString *voiceId in voices) {
-		NSDictionary *attrs = [NSSpeechSynthesizer attributesForVoice:voiceId];
-		NSString *voiceName = attrs[NSVoiceName];
+		NSDictionary *attrs     = [NSSpeechSynthesizer attributesForVoice:voiceId];
+		NSString     *voiceName = attrs[NSVoiceName];
 		if (voiceName && [[voiceName lowercaseString] isEqualToString:target]) {
 			return voiceId;
 		}
@@ -212,46 +215,58 @@ static NSString *resolve_voice_name(const char *name) {
 	return nil;
 }
 
-/* ---- public C ABI ---- */
+// ---------------------------------------------------------------------------
+// SpeechBridge — public API
+// ---------------------------------------------------------------------------
 
-void verbatim_speak(VerbatimSession *session, const char *text, float rate,
-                     const char *voice_name) {
+@implementation SpeechBridge
+
++ (void)speakWithSession:(VerbatimSession *)session
+                    text:(NSString *)text
+                    rate:(float)rate
+               voiceName:(NSString *)voiceName
+{
 	[engine_lock() lock];
 
 	/* Interrupt + notify whatever was previously speaking — inlined here
-	 * rather than calling verbatim_stop() to avoid re-locking
-	 * g_engine_lock (NSLock is not recursive, same as the old std::mutex). */
-	VerbatimSession *previous_session = g_current_session;
-	NSSpeechSynthesizer *previous_synth = g_synth;
+	 * rather than calling -stop to avoid re-locking g_engine_lock (NSLock
+	 * is not recursive, same as the old std::mutex). */
+	VerbatimSession     *previous_session = g_current_session;
+	NSSpeechSynthesizer *previous_synth   = g_synth;
 
-	NSString *resolvedVoice = resolve_voice_name(voice_name);
-	if (voice_name && voice_name[0] != '\0' && resolvedVoice == nil) {
-		LOG_WARN(@"speech: TTS-Voice '%s' not found on this system — using default voice",
-		         voice_name);
+	NSString *resolvedVoice = resolve_voice_name(voiceName);
+	if (voiceName.length > 0 && resolvedVoice == nil) {
+		LOG_WARN(@"speech: TTS-Voice '%@' not found on this system — using default voice",
+		         voiceName);
 	}
 
-	LOG_INFO(@"speech: starting %zu chars, rate: %.0f wpm, voice: %s", strlen(text), (double)rate,
-	         voice_name && voice_name[0] ? voice_name : "default");
+	LOG_INFO(@"speech: starting %lu chars, rate: %.0f wpm, voice: %@",
+	         (unsigned long) text.length,
+	         (double) rate,
+	         voiceName.length > 0 ? voiceName : @"default");
 
 	NSSpeechSynthesizer *synth = [[NSSpeechSynthesizer alloc] initWithVoice:resolvedVoice];
 	if (!synth) {
 		LOG_ERROR(@"speech: could not create NSSpeechSynthesizer");
 		[engine_lock() unlock];
 		if (previous_session) {
-			push_event(previous_session, @"{\"event\":\"finished\",\"completed\":false}", YES);
+			[previous_session pushEvent:@"{\"event\":\"finished\",\"completed\":false}"
+			                   terminal:YES];
 		}
-		if (previous_synth) [previous_synth stopSpeaking];
-		push_event(session, @"{\"event\":\"error\",\"message\":\"Could not create NSSpeechSynthesizer\"}",
-		           YES);
+		if (previous_synth)
+			[previous_synth stopSpeaking];
+		[session
+		    pushEvent:@"{\"event\":\"error\",\"message\":\"Could not create NSSpeechSynthesizer\"}"
+		     terminal:YES];
 		return;
 	}
 
 	VerbatimSpeechDelegate *delegate = [[VerbatimSpeechDelegate alloc] init];
-	synth.delegate = delegate;
-	synth.rate = rate;
+	synth.delegate                   = delegate;
+	synth.rate                       = rate;
 
-	g_synth = synth;
-	g_delegate = delegate;
+	g_synth           = synth;
+	g_delegate        = delegate;
 	g_current_session = session;
 
 	[engine_lock() unlock];
@@ -260,31 +275,32 @@ void verbatim_speak(VerbatimSession *session, const char *text, float rate,
 	 * actually interrupt its synth — same ordering as the old .mm file
 	 * (stopSpeaking happens before the new startSpeakingString call). */
 	if (previous_session) {
-		push_event(previous_session, @"{\"event\":\"finished\",\"completed\":false}", YES);
+		[previous_session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
 	}
 	if (previous_synth) {
 		[previous_synth stopSpeaking];
 	}
 
-	push_event(session, @"{\"event\":\"started\"}", NO);
+	[session pushEvent:@"{\"event\":\"started\"}" terminal:NO];
 
-	NSString *nsText = [NSString stringWithUTF8String:text];
-	BOOL ok = [synth startSpeakingString:nsText];
+	BOOL ok = [synth startSpeakingString:text];
 	if (!ok) {
 		LOG_ERROR(@"speech: startSpeakingString returned NO");
-		push_event(session, @"{\"event\":\"error\",\"message\":\"startSpeaking returned false\"}", YES);
+		[session pushEvent:@"{\"event\":\"error\",\"message\":\"startSpeaking returned false\"}"
+		          terminal:YES];
 
 		[engine_lock() lock];
 		if (g_synth == synth) {
-			g_synth = nil;
-			g_delegate = nil;
-			g_current_session = NULL;
+			g_synth           = nil;
+			g_delegate        = nil;
+			g_current_session = nil;
 		}
 		[engine_lock() unlock];
 	}
 }
 
-void verbatim_stop(void) {
++ (void)stop
+{
 	[engine_lock() lock];
 	if (!g_current_session) {
 		LOG_DEBUG(@"speech: stop() called but nothing is speaking — nothing to do");
@@ -293,21 +309,24 @@ void verbatim_stop(void) {
 	}
 	LOG_INFO(@"speech: stopping current utterance");
 
-	VerbatimSession *session = g_current_session;
-	NSSpeechSynthesizer *synth = g_synth;
+	VerbatimSession     *session = g_current_session;
+	NSSpeechSynthesizer *synth   = g_synth;
 
-	g_synth = nil;
-	g_delegate = nil;
-	g_current_session = NULL;
+	g_synth           = nil;
+	g_delegate        = nil;
+	g_current_session = nil;
 	[engine_lock() unlock];
 
-	push_event(session, @"{\"event\":\"finished\",\"completed\":false}", YES);
+	[session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
 	[synth stopSpeaking];
 }
 
-int verbatim_is_speaking(void) {
++ (BOOL)isSpeaking
+{
 	[engine_lock() lock];
-	int speaking = g_current_session != NULL;
+	BOOL speaking = g_current_session != nil;
 	[engine_lock() unlock];
 	return speaking;
 }
+
+@end

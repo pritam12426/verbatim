@@ -17,9 +17,12 @@
  * already the one piece of parsing in the project that's been carefully
  * verified against real `say -v '?'` output; a rewrite here would trade a
  * proven regex for an unproven one for no functional gain.
+ *
+ * This version replaces the C VoiceInfo struct with an @interface and
+ * returns NSArray<VoiceInfo *> instead of a malloc'd C array.
  */
 
-#include "voices.h"
+#import "voices.h"
 
 #include <ctype.h>
 #include <regex.h>
@@ -31,19 +34,35 @@
 
 #define VOICES_CAPACITY_INITIAL 32
 
-static VoiceInfo *g_cached = NULL;
-static size_t g_cached_count = 0;
+// ---------------------------------------------------------------------------
+// VoiceInfo @implementation
+// ---------------------------------------------------------------------------
 
-static void rtrim(char *s) {
+@implementation VoiceInfo
+@end
+
+// ---------------------------------------------------------------------------
+// Module-level cache
+// ---------------------------------------------------------------------------
+
+static NSArray<VoiceInfo *> *g_cached = nil;
+
+static void rtrim(char *s)
+{
 	size_t n = strlen(s);
-	while (n > 0 && isspace((unsigned char)s[n - 1])) {
+	while (n > 0 && isspace((unsigned char) s[n - 1])) {
 		s[--n] = '\0';
 	}
 }
 
-/* Reads all of `say -v '?'`'s stdout via popen. Returns a malloc'd,
+// ---------------------------------------------------------------------------
+// Shelling out to `say -v '?'`
+// ---------------------------------------------------------------------------
+
+/* Reads all of `say -v '?'`'s stdout via popen.  Returns a malloc'd,
  * NUL-terminated buffer the caller must free, or NULL on failure. */
-static char *run_say_voice_list(void) {
+static char *run_say_voice_list(void)
+{
 	LOG_DEBUG(@"voices: launching `say -v '?'`");
 	FILE *pipe = popen("/usr/bin/say -v '?' 2>/dev/null", "r");
 	if (!pipe) {
@@ -52,7 +71,7 @@ static char *run_say_voice_list(void) {
 	}
 
 	size_t cap = 8192, len = 0;
-	char *buf = malloc(cap);
+	char  *buf = malloc(cap);
 	if (!buf) {
 		pclose(pipe);
 		return NULL;
@@ -62,8 +81,8 @@ static char *run_say_voice_list(void) {
 	while ((n = fread(buf + len, 1, cap - len - 1, pipe)) > 0) {
 		len += n;
 		if (len + 1 >= cap) {
-			cap *= 2;
-			char *grown = realloc(buf, cap);
+			cap         *= 2;
+			char *grown  = realloc(buf, cap);
 			if (!grown) {
 				free(buf);
 				pclose(pipe);
@@ -79,25 +98,28 @@ static char *run_say_voice_list(void) {
 	return buf;
 }
 
-static VoiceInfo *parse(const char *output, size_t *count) {
+// ---------------------------------------------------------------------------
+// Parsing `say -v '?'` output into VoiceInfo objects
+// ---------------------------------------------------------------------------
+
+static NSArray<VoiceInfo *> *parse(const char *output)
+{
 	regex_t re;
 	if (regcomp(&re, "^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#", REG_EXTENDED) != 0) {
 		LOG_ERROR(@"voices: failed to compile regex");
-		*count = 0;
-		return NULL;
+		return @[];
 	}
 
-	size_t cap = VOICES_CAPACITY_INITIAL;
-	VoiceInfo *results = malloc(cap * sizeof(VoiceInfo));
-	size_t n = 0;
+	NSMutableArray<VoiceInfo *> *results = [NSMutableArray
+	    arrayWithCapacity:VOICES_CAPACITY_INITIAL];
 
 	/* Walk line by line without mutating `output` (strtok would). */
-	const char *line_start = output;
-	int lines_checked = 0, lines_matched = 0;
+	const char *line_start    = output;
+	int         lines_checked = 0, lines_matched = 0;
 
 	while (*line_start) {
 		const char *line_end = strchr(line_start, '\n');
-		size_t line_len = line_end ? (size_t)(line_end - line_start) : strlen(line_start);
+		size_t      line_len = line_end ? (size_t) (line_end - line_start) : strlen(line_start);
 
 		if (line_len > 0 && line_len < 512) {
 			char line[512];
@@ -107,40 +129,44 @@ static VoiceInfo *parse(const char *output, size_t *count) {
 
 			regmatch_t m[3];
 			if (regexec(&re, line, 3, m, 0) == 0) {
-				if (n == cap) {
-					cap *= 2;
-					VoiceInfo *grown = realloc(results, cap * sizeof(VoiceInfo));
-					if (!grown) break;
-					results = grown;
-				}
+				int name_len = (int) (m[1].rm_eo - m[1].rm_so);
+				int lang_len = (int) (m[2].rm_eo - m[2].rm_so);
 
-				int name_len = (int)(m[1].rm_eo - m[1].rm_so);
-				int lang_len = (int)(m[2].rm_eo - m[2].rm_so);
-				snprintf(results[n].name, sizeof(results[n].name), "%.*s", name_len,
-				         line + m[1].rm_so);
-				rtrim(results[n].name);
-				snprintf(results[n].language, sizeof(results[n].language), "%.*s", lang_len,
-				         line + m[2].rm_so);
-				n++;
+				char name_buf[128];
+				char lang_buf[32];
+				snprintf(name_buf, sizeof(name_buf), "%.*s", name_len, line + m[1].rm_so);
+				rtrim(name_buf);
+				snprintf(lang_buf, sizeof(lang_buf), "%.*s", lang_len, line + m[2].rm_so);
+
+				VoiceInfo *v = [[VoiceInfo alloc] init];
+				v.name       = [NSString stringWithUTF8String:name_buf];
+				v.language   = [NSString stringWithUTF8String:lang_buf];
+				[results addObject:v];
 				lines_matched++;
 			}
 		}
 
-		if (!line_end) break;
+		if (!line_end)
+			break;
 		line_start = line_end + 1;
 	}
 
 	regfree(&re);
-	LOG_DEBUG(@"voices: parse complete — %d lines checked, %d matched, %zu results", lines_checked,
-	          lines_matched, n);
-	*count = n;
-	return results;
+	LOG_DEBUG(@"voices: parse complete — %d lines checked, %d matched, %lu results",
+	          lines_checked,
+	          lines_matched,
+	          (unsigned long) results.count);
+	return [results copy];
 }
 
-VoiceInfo *voices_list(size_t *count) {
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+NSArray<VoiceInfo *> *voicesList(void)
+{
 	if (g_cached) {
-		LOG_DEBUG(@"voices: cache hit, returning %zu cached voices", g_cached_count);
-		*count = g_cached_count;
+		LOG_DEBUG(@"voices: cache hit, returning %lu cached voices", (unsigned long) g_cached.count);
 		return g_cached;
 	}
 
@@ -148,18 +174,14 @@ VoiceInfo *voices_list(size_t *count) {
 	char *output = run_say_voice_list();
 	if (!output) {
 		LOG_WARN(@"voices: run_say_voice_list returned NULL");
-		*count = 0;
-		return NULL;
+		return @[];
 	}
 
-	size_t n;
-	VoiceInfo *voices = parse(output, &n);
+	NSArray<VoiceInfo *> *voices = parse(output);
 	free(output);
 
 	g_cached = voices;
-	g_cached_count = n;
-	LOG_DEBUG(@"voices: cached %zu voices", n);
+	LOG_DEBUG(@"voices: cached %lu voices", (unsigned long) voices.count);
 
-	*count = n;
 	return voices;
 }

@@ -14,6 +14,9 @@
  * strict superset of C — sockets, pthreads, and printf-family calls need
  * no changes to build in a .m file). Logic below is otherwise unchanged
  * from the proven, curl-tested original.
+ *
+ * This version replaces C structs with ObjC objects (HttpRequest,
+ * HttpHeader, ServerConfig) as declared in http_server.h.
  */
 
 #include "http_server.h"
@@ -36,14 +39,41 @@
 #define RECV_MAX_HEADER_BYTES (64 * 1024)
 #define RECV_CHUNK            4096
 
-const char *http_get_header(const HttpRequest *req, const char *name)
+// ---------------------------------------------------------------------------
+// HttpHeader / HttpRequest / ServerConfig @implementation
+// ---------------------------------------------------------------------------
+
+@implementation HttpHeader
+@end
+
+@implementation HttpRequest
+- (instancetype)init
 {
-	for (int i = 0; i < req->header_count; i++) {
-		if (strcasecmp(req->headers[i].name, name) == 0) {
-			return req->headers[i].value;
+	self = [super init];
+
+	if (self) {
+		_headers = [NSMutableArray array];
+	}
+
+	return self;
+}
+@end
+
+@implementation ServerConfig
+@end
+
+// ---------------------------------------------------------------------------
+// C functions declared in http_server.h
+// ---------------------------------------------------------------------------
+
+NSString *http_get_header(HttpRequest *req, NSString *name)
+{
+	for (HttpHeader *h in req.headers) {
+		if ([h.name caseInsensitiveCompare:name] == NSOrderedSame) {
+			return h.value;
 		}
 	}
-	return NULL;
+	return nil;
 }
 
 void http_send_response(int         fd,
@@ -65,14 +95,17 @@ void http_send_response(int         fd,
                      status_text,
                      content_type,
                      body_len);
+
 	if (n < 0 || (size_t) n >= sizeof(header)) {
 		LOG_ERROR(@"http: response header truncated");
 		return;
 	}
+
 	if (send(fd, header, (size_t) n, 0) < 0) {
 		LOG_WARN(@"http: send(header) failed: %s", strerror(errno));
 		return;
 	}
+
 	if (body_len > 0 && send(fd, body, body_len, 0) < 0) {
 		LOG_WARN(@"http: send(body) failed: %s", strerror(errno));
 	}
@@ -89,10 +122,12 @@ void http_begin_chunked_response(int fd, const char *content_type)
 	                  "Connection: close\r\n"
 	                  "\r\n",
                      content_type);
+
 	if (n < 0 || (size_t) n >= sizeof(header)) {
 		LOG_ERROR(@"http: chunked response header truncated");
 		return;
 	}
+
 	if (send(fd, header, (size_t) n, 0) < 0) {
 		LOG_WARN(@"http: send(chunked header) failed: %s", strerror(errno));
 	}
@@ -102,12 +137,16 @@ void http_write_chunk(int fd, const char *data, size_t len)
 {
 	if (len == 0)
 		return; /* a zero-length chunk would be misread as the terminator */
+
 	char size_line[32];
 	int  n = snprintf(size_line, sizeof(size_line), "%zx\r\n", len);
+
 	if (send(fd, size_line, (size_t) n, 0) < 0)
 		return;
+
 	if (send(fd, data, len, 0) < 0)
 		return;
+
 	if (send(fd, "\r\n", 2, 0) < 0)
 		return;
 }
@@ -117,14 +156,18 @@ void http_end_chunks(int fd)
 	send(fd, "0\r\n\r\n", 5, 0);
 }
 
-/* ---- request parsing ---- */
+// ---------------------------------------------------------------------------
+// Request parsing — raw C socket I/O, result is ObjC objects
+// ---------------------------------------------------------------------------
 
 static char *recv_until_headers_done(int fd, size_t *total_len, size_t *header_end)
 {
 	size_t cap = RECV_INITIAL_CAP;
 	char  *buf = malloc(cap);
+
 	if (!buf)
 		return NULL;
+
 	size_t len = 0;
 
 	for (;;) {
@@ -137,20 +180,25 @@ static char *recv_until_headers_done(int fd, size_t *total_len, size_t *header_e
 			}
 			buf = grown;
 		}
+
 		ssize_t n = recv(fd, buf + len, cap - len - 1, 0);
+
 		if (n <= 0) {
 			free(buf);
 			return NULL;
 		}
+
 		len      += (size_t) n;
 		buf[len]  = '\0';
 
 		char *found = strstr(buf, "\r\n\r\n");
+
 		if (found) {
 			*total_len  = len;
 			*header_end = (size_t) (found + 4 - buf);
 			return buf;
 		}
+
 		if (len > RECV_MAX_HEADER_BYTES) {
 			LOG_WARN(@"http: request headers exceeded %d bytes, dropping connection",
 			         RECV_MAX_HEADER_BYTES);
@@ -160,82 +208,89 @@ static char *recv_until_headers_done(int fd, size_t *total_len, size_t *header_e
 	}
 }
 
-/* Parses the request line + headers from buf[0..header_end). Does NOT read
- * the body — caller does that separately once Content-Length is known. */
-static int parse_head(HttpRequest *req, const char *buf, size_t header_end)
+// Parses the request line + headers from buf[0..header_end) and returns
+// a fully-populated HttpRequest object.  Does NOT read the body — caller
+// does that separately once Content-Length is known.
+static HttpRequest *parse_head(const char *buf, size_t header_end)
 {
-	memset(req, 0, sizeof(*req));
+	HttpRequest *req = [[HttpRequest alloc] init];
 
 	const char *line_end = strstr(buf, "\r\n");
-	if (!line_end || line_end - buf >= (long) header_end)
-		return -1;
 
-	char method[8], path[HTTP_MAX_PATH], version[16];
+	if (!line_end || line_end - buf >= (long) header_end)
+		return nil;
+
+	char method[8], path[512], version[16];
 	int  matched = sscanf(buf, "%7s %511s %15s", method, path, version);
+
 	if (matched != 3)
-		return -1;
-	snprintf(req->method, sizeof(req->method), "%s", method);
-	snprintf(req->path, sizeof(req->path), "%s", path);
+		return nil;
+
+	req.method = [NSString stringWithUTF8String:method];
+	req.path   = [NSString stringWithUTF8String:path];
 
 	const char *cursor = line_end + 2;
-	while (cursor < buf + header_end && req->header_count < HTTP_MAX_HEADERS) {
+	while (cursor < buf + header_end && (int) req.headers.count < HTTP_MAX_HEADERS) {
 		const char *next_line = strstr(cursor, "\r\n");
+
 		if (!next_line || next_line == cursor)
 			break; /* blank line = end of headers */
 
 		const char *colon = memchr(cursor, ':', (size_t) (next_line - cursor));
+
 		if (colon) {
 			size_t name_len = (size_t) (colon - cursor);
-			if (name_len >= HTTP_MAX_HEADER_NAME) {
+
+			if (name_len >= HTTP_MAX_HEADER_NAME)
 				name_len = HTTP_MAX_HEADER_NAME - 1;
-			}
 
 			const char *value_start = colon + 1;
-			while (value_start < next_line && *value_start == ' ') {
+			while (value_start < next_line && *value_start == ' ')
 				value_start++;
-			}
 			size_t value_len = (size_t) (next_line - value_start);
-			if (value_len >= HTTP_MAX_HEADER_VALUE) {
-				value_len = HTTP_MAX_HEADER_VALUE - 1;
-			}
 
-			HttpHeader *h = &req->headers[req->header_count];
-			memcpy(h->name, cursor, name_len);
-			h->name[name_len] = '\0';
-			memcpy(h->value, value_start, value_len);
-			h->value[value_len] = '\0';
-			req->header_count++;
+			if (value_len >= HTTP_MAX_HEADER_VALUE)
+				value_len = HTTP_MAX_HEADER_VALUE - 1;
+
+			HttpHeader *h = [[HttpHeader alloc] init];
+			h.name        = [[NSString alloc] initWithBytes:cursor
+                                              length:name_len
+                                            encoding:NSUTF8StringEncoding];
+			h.value       = [[NSString alloc] initWithBytes:value_start
+                                               length:value_len
+                                             encoding:NSUTF8StringEncoding];
+			[req.headers addObject:h];
 		}
 		cursor = next_line + 2;
 	}
-	return 0;
+	return req;
 }
 
-static void free_request(HttpRequest *req)
-{
-	free(req->body);
-	req->body = NULL;
-}
+// ---------------------------------------------------------------------------
+// Connection handling — one pthread per connection
+// ---------------------------------------------------------------------------
 
 struct connection_args {
-	int                 fd;
-	const ServerConfig *config;
+	int   fd;
+	void *config_bridged; /* __bridge_retained ServerConfig*, released via __bridge_transfer */
 };
 
 static void *handle_connection(void *arg)
 {
 	struct connection_args *a      = arg;
 	int                     fd     = a->fd;
-	const ServerConfig     *config = a->config;
+	ServerConfig           *config = (__bridge_transfer ServerConfig *) a->config_bridged;
 	free(a);
 
 	struct sockaddr_in peer;
-	socklen_t          peer_len                   = sizeof(peer);
-	char               client_ip[INET_ADDRSTRLEN] = "?";
+	socklen_t          peer_len                        = sizeof(peer);
+	char               client_ip_cstr[INET_ADDRSTRLEN] = "?";
 
 	if (getpeername(fd, (struct sockaddr *) &peer, &peer_len) == 0) {
-		inet_ntop(AF_INET, &peer.sin_addr, client_ip, sizeof(client_ip));
+		inet_ntop(AF_INET, &peer.sin_addr, client_ip_cstr, sizeof(client_ip_cstr));
 	}
+
+	NSString *clientIP = [NSString stringWithUTF8String:client_ip_cstr];
 
 	size_t total_len, header_end;
 	char  *raw = recv_until_headers_done(fd, &total_len, &header_end);
@@ -245,10 +300,10 @@ static void *handle_connection(void *arg)
 		return NULL;
 	}
 
-	HttpRequest req;
+	HttpRequest *req = parse_head(raw, header_end);
 
-	if (parse_head(&req, raw, header_end) != 0) {
-		LOG_WARN(@"%s: malformed request line/headers", client_ip);
+	if (!req) {
+		LOG_WARN(@"%@: malformed request line/headers", clientIP);
 		free(raw);
 		close(fd);
 		return NULL;
@@ -256,50 +311,64 @@ static void *handle_connection(void *arg)
 
 	/* Body: whatever's already past header_end in `raw` is the start of it;
 	 * read the rest if Content-Length says there's more. */
-	size_t      body_have          = total_len - header_end;
-	const char *content_length_hdr = http_get_header(&req, "Content-Length");
-	size_t content_length = content_length_hdr ? (size_t) strtoul(content_length_hdr, NULL, 10) : 0;
+	size_t      body_have               = total_len - header_end;
+	const char *content_length_hdr_cstr = NULL;
+	NSString   *content_length_hdr      = http_get_header(req, @"Content-Length");
+
+	if (content_length_hdr) {
+		static char cl_buf[32];
+		snprintf(cl_buf, sizeof(cl_buf), "%s", [content_length_hdr UTF8String]);
+		content_length_hdr_cstr = cl_buf;
+	}
+
+	size_t content_length = content_length_hdr_cstr
+	                            ? (size_t) strtoul(content_length_hdr_cstr, NULL, 10)
+	                            : 0;
 
 	if (content_length > 0) {
-		req.body      = malloc(content_length + 1);
-		size_t copied = body_have < content_length ? body_have : content_length;
-		memcpy(req.body, raw + header_end, copied);
-		size_t remaining = content_length - copied;
+		size_t         to_copy  = body_have < content_length ? body_have : content_length;
+		NSMutableData *bodyData = [[NSMutableData alloc] initWithCapacity:content_length];
+		[bodyData appendBytes:raw + header_end length:to_copy];
+		size_t remaining = content_length - to_copy;
 		while (remaining > 0) {
-			ssize_t n = recv(fd, req.body + copied, remaining, 0);
+			char    chunk[RECV_CHUNK];
+			size_t  chunk_size = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+			ssize_t n          = recv(fd, chunk, chunk_size, 0);
 
-			if (n <= 0) {
+			if (n <= 0)
 				break;
-			}
 
-			copied    += (size_t) n;
+			[bodyData appendBytes:chunk length:(size_t) n];
 			remaining -= (size_t) n;
 		}
-		req.body[copied] = '\0';
-		req.body_len     = copied;
+		req.body = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
 	}
+
 	free(raw);
 
-	LOG_INFO(@"%s %s %s", client_ip, req.method, req.path);
+	LOG_INFO(@"%@ %@ %@", clientIP, req.method, req.path);
 
-	if (strcmp(req.method, "POST") == 0 && strcmp(req.path, "/") == 0) {
-		route_speak(fd, &req, config, client_ip);
-	} else if (strcmp(req.method, "POST") == 0 && strcmp(req.path, "/stop") == 0) {
-		route_stop(fd, &req, client_ip);
-	} else if (strcmp(req.method, "GET") == 0 && strcmp(req.path, "/status") == 0) {
-		route_status(fd, &req, client_ip);
-	} else if (strcmp(req.method, "GET") == 0 && strcmp(req.path, "/voices") == 0) {
-		route_voices(fd, &req, client_ip);
+	if ([req.method isEqualToString:@"POST"] && [req.path isEqualToString:@"/"]) {
+		[Routes speakWithFD:fd request:req config:config clientIP:clientIP];
+	} else if ([req.method isEqualToString:@"POST"] && [req.path isEqualToString:@"/stop"]) {
+		[Routes stopWithFD:fd request:req clientIP:clientIP];
+	} else if ([req.method isEqualToString:@"GET"] && [req.path isEqualToString:@"/status"]) {
+		[Routes statusWithFD:fd request:req clientIP:clientIP];
+	} else if ([req.method isEqualToString:@"GET"] && [req.path isEqualToString:@"/voices"]) {
+		[Routes voicesWithFD:fd request:req clientIP:clientIP];
 	} else {
-		route_not_found(fd);
+		[Routes notFoundWithFD:fd];
 	}
 
-	free_request(&req);
 	close(fd);
 	return NULL;
 }
 
-int http_server_run(const ServerConfig *config)
+// ---------------------------------------------------------------------------
+// Server entry point — blocks forever
+// ---------------------------------------------------------------------------
+
+int http_server_run(ServerConfig *config)
 {
 	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -314,15 +383,16 @@ int http_server_run(const ServerConfig *config)
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	addr.sin_port   = htons(config->port);
-	if (inet_pton(AF_INET, config->host, &addr.sin_addr) != 1) {
-		LOG_FATAL(@"http: invalid host '%s'", config->host);
+	addr.sin_port   = htons(config.port);
+
+	if (inet_pton(AF_INET, [config.host UTF8String], &addr.sin_addr) != 1) {
+		LOG_FATAL(@"http: invalid host '%@'", config.host);
 		close(server_fd);
 		return 1;
 	}
 
 	if (bind(server_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-		LOG_FATAL(@"http: bind(%s:%u) failed: %s", config->host, config->port, strerror(errno));
+		LOG_FATAL(@"http: bind(%@:%u) failed: %s", config.host, config.port, strerror(errno));
 		close(server_fd);
 		return 1;
 	}
@@ -333,10 +403,11 @@ int http_server_run(const ServerConfig *config)
 		return 1;
 	}
 
-	LOG_INFO(@"verbatimd listening on http://%s:%u", config->host, config->port);
+	LOG_INFO(@"verbatimd listening on http://%@:%u", config.host, config.port);
 
 	for (;;) {
 		int client_fd = accept(server_fd, NULL, NULL);
+
 		if (client_fd < 0) {
 			if (errno == EINTR)
 				continue;
@@ -346,15 +417,17 @@ int http_server_run(const ServerConfig *config)
 
 		struct connection_args *a = malloc(sizeof(struct connection_args));
 		a->fd                     = client_fd;
-		a->config                 = config;
+		a->config_bridged         = (__bridge_retained void *) config;
 
 		pthread_t tid;
+
 		if (pthread_create(&tid, NULL, handle_connection, a) != 0) {
 			LOG_ERROR(@"http: pthread_create failed, dropping connection");
 			free(a);
 			close(client_fd);
 			continue;
 		}
+
 		pthread_detach(tid);
 	}
 }

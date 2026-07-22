@@ -1,3 +1,7 @@
+#ifndef _VERBATIM_LOG_H_
+#define _VERBATIM_LOG_H_
+
+
 /*
  * log.h — Thread-safe logging implementation for Objective-C
  *
@@ -166,3 +170,6 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 
 
 NS_ASSUME_NONNULL_END
+
+
+#endif  // _VERBATIM_LOG_H_

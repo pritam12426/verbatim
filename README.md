@@ -1,70 +1,75 @@
-# verbatim
+# verbatimd (macOS)
 
-A local macOS TTS server built on top of `say`/`NSSpeechSynthesizer`, with
-real-time, per-word timing delivered over HTTP as NDJSON. 100% Objective-C
-— no C++, no external JSON library.
+A local text-to-speech server for macOS. Speaks text via `NSSpeechSynthesizer`
+(the engine behind `say`) and streams real-time word-boundary events as NDJSON
+— enabling per-word highlighting in the browser as words are spoken.
 
-## Building
+Single binary, no runtime dependencies. 100% Objective-C. Listens on
+`127.0.0.1:5959` only.
 
-```sh
-make help
-make             # release build
-make debug       # ASan/UBSan build with source-location + timestamp logging
-make install     # installs to $PREFIX/bin (default /usr/local/bin)
-```
+## Requirements
 
-Requires Xcode command line tools (Foundation + AppKit) — this only
-builds and runs on macOS, since `NSSpeechSynthesizer` is an AppKit API.
+- macOS with Xcode Command Line Tools (`xcode-select --install`)
+- Foundation + AppKit frameworks (ships with macOS)
 
-## Running
+## Build
 
 ```sh
-verbatimd --host 127.0.0.1 --port 5959 --rate 175 --log-level info
+make              # release build (-O3)
+make debug        # debug build (ASan, UBSan, -g3)
+make help         # show all targets and build options
 ```
 
-| Flag                    | Default     | Meaning                                                         |
-| ----------------------- | ----------- | --------------------------------------------------------------- |
-| `-H, --host HOST`       | `127.0.0.1` | Host to bind to                                                 |
-| `-P, --port PORT`       | `5959`      | Port to listen on                                               |
-| `-R, --rate RATE`       | `175`       | Default speaking rate, words per minute                         |
-| `-L, --log-level LEVEL` | `info`      | `off` , `fatal` , `error` , `warn` , `info` , `debug` , `trace` |
-| `-h, --help`            |             | Print usage                                                     |
-| `-V, --version`         |             | Print version                                                   |
+## Run
 
-## HTTP API
+```sh
+./verbatimd                              # default: 127.0.0.1:5959
+./verbatimd --host 0.0.0.0 --port 8080  # custom bind
+./verbatimd --log-level trace            # verbose per-word logging
+```
+
+## CLI options
+
+| Flag                | Short | Default     | Description                                               |
+| ------------------- | ----- | ----------- | --------------------------------------------------------- |
+| `--host HOST`       | `-H`  | `127.0.0.1` | Bind address                                              |
+| `--port PORT`       | `-P`  | `5959`      | Listen port                                               |
+| `--rate RATE`       | `-R`  | `175`       | Default speaking rate (words/min)                         |
+| `--log-level LEVEL` | `-L`  | `info`      | `off`, `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
+| `--help`            | `-h`  |             | Print usage                                               |
+| `--version`         | `-V`  |             | Print version                                             |
+
+## API
+
+All endpoints accept/return JSON. Every request is logged at INFO level with client IP.
 
 ### `POST /`
 
-Body is the raw text to speak (not JSON). Optional headers:
+Speak text. Body is raw UTF-8 text (not JSON).
 
-- `TTS-Voice` — a voice display name, matched case-insensitively against
-  the names `GET /voices` returns. Falls back to the system default voice
-  if not found (a warning is logged).
-- `TTS-Speed` — friendly `1` (slowest) to `10` (fastest) scale, mapped
-  linearly onto the underlying words-per-minute rate.
-- `ndjson` — `true` (default) streams newline-delimited JSON events as
-  they happen; `false` blocks until speaking finishes and returns a
-  single JSON object instead.
+**Headers:**
 
-With `ndjson: true`, the response is `application/x-ndjson`, one JSON
-object per line:
+| Header      | Required | Description                                                                       |
+| ----------- | -------- | --------------------------------------------------------------------------------- |
+| `TTS-Voice` | No       | Voice display name (case-insensitive). Falls back to system default if not found. |
+| `TTS-Speed` | No       | 1 (slowest) – 10 (fastest). Falls back to `--rate`.                               |
+| `ndjson`    | No       | `"true"` (default) or `"false"`.                                                  |
+
+**ndjson=true (default):** Returns `application/x-ndjson` stream. Each line is a JSON event:
 
 ```json
 {"event":"estimate","word_count":42,"estimated_seconds":16.8}
 {"event":"started"}
 {"event":"word","start":0,"length":5}
-{"event":"word","start":6,"length":7}
+{"event":"word","start":6,"length":3}
 {"event":"finished","completed":true}
 ```
 
-The `estimate` line is sent immediately — before the synthesizer has
-spoken a single word — computed from `word_count / rate * 60`. It's a
-heuristic (real speech isn't perfectly uniform per word), not a
-guarantee, but it's effectively free to compute compared to how long the
-speech itself will take.
+The `estimate` event is sent immediately — before the synthesizer has spoken a
+single word — computed from `word_count / rate * 60`. It's a heuristic, not a
+guarantee, but it's effectively free to compute.
 
-With `ndjson: false`, the response is a single JSON object once speaking
-completes:
+**ndjson=false:** Blocks until speech finishes, then returns:
 
 ```json
 {"status":"done","word_count":42,"estimated_seconds":16.8}
@@ -72,40 +77,99 @@ completes:
 
 ### `POST /stop`
 
-Stops whatever is currently speaking. `{"status":"stopped"}`.
+Stop current speech. Returns `{"status":"stopped"}`.
 
 ### `GET /status`
 
-`{"speaking":true|false}`.
+Returns `{"speaking": bool}`.
 
 ### `GET /voices`
 
-`[{"name":"Albert","language":"en_US"}, ...]` — parsed from `say -v '?'`,
-cached for the process lifetime.
+Returns array of available voices:
 
-## Project layout
-
-```
-verbatim/
-├── Makefile
-├── README.md
-└── src/
-    ├── project_config.h    # version string, binary name, shared metadata
-    ├── command_line.h/.m   # argv parsing (this project's own — no argp)
-    ├── log.h/.m            # thread-safe leveled logging
-    ├── json_writer.h/.m    # JSON *serialization* only, via NSJSONSerialization
-    ├── http_server.h/.m    # minimal hand-rolled HTTP/1.1 server
-    ├── voices.h/.m         # GET /voices — shells out to `say -v '?'`
-    ├── speech_bridge.h/.m  # NSSpeechSynthesizer wrapper + event queue
-    ├── routes.h/.m         # the four HTTP endpoints
-    └── main.m              # entry point: parses args, starts the server
+```json
+[{"name":"Albert","language":"en_US"},{"name":"Bad News","language":"en_US"},...]
 ```
 
-⚠️ `speech_bridge.m` is the one file that can't be compiled or tested
-outside macOS (there's no AppKit on Linux/CI), so it's the most
-important one to verify with a real build.
+Voice list is cached in RAM after first call.
 
----
+## Quick test (curl)
+
+Start the server first: `make && ./verbatimd`
+
+```sh
+# Check status
+curl http://127.0.0.1:5959/status
+
+# List available voices
+curl http://127.0.0.1:5959/voices
+
+# Speak text (streams NDJSON events)
+curl -N -X POST http://127.0.0.1:5959/ -d "Hello world, this is verbatim."
+
+# Speak with a specific voice and speed
+curl -N -X POST http://127.0.0.1:5959/ \
+  -H "TTS-Voice: Albert" \
+  -H "TTS-Speed: 5" \
+  -d "Testing voice and speed settings."
+
+# Speak raw (block until done, no streaming)
+curl -X POST http://127.0.0.1:5959/ \
+  -H "ndjson: false" \
+  -d "This blocks until speech finishes."
+
+# Stop current speech
+curl -X POST http://127.0.0.1:5959/stop
+```
+
+## Log levels
+
+| Level   | What you see                                                      |
+| ------- | ----------------------------------------------------------------- |
+| `error` | Fatal errors, synth creation failures                             |
+| `warn`  | Voice not found, bad requests                                     |
+| `info`  | Every HTTP request (IP + method + path), speech start/stop/finish |
+| `debug` | Thread spawn, voice cache hit/miss                                |
+| `trace` | Per-word delegate callbacks, stray callback suppression           |
+
+Default `info` gives a clear access log of all activity.
+
+## Format
+
+```sh
+clang-format -i src/*.m src/*.h
+```
+
+Formatting is configured in `.clang-format` (tabs, 100-col limit, pointer-right alignment).
+
+## Install / uninstall
+
+```sh
+make install                          # copies to /usr/local/bin/verbatimd
+make install PREFIX="$HOME/.local"    # or custom prefix
+make uninstall
+```
+
+## Architecture
+
+Ten source files, no subdirectories:
+
+```
+src/
+├── project_config.h    # version string, binary name, shared metadata
+├── command_line.h/.m   # argv parsing (this project's own — no argp)
+├── log.h/.m            # thread-safe leveled logging with ANSI colour
+├── json_writer.h/.m    # JSON serialization via NSJSONSerialization
+├── http_server.h/.m    # minimal hand-rolled HTTP/1.1 server (thread-per-connection)
+├── voices.h/.m         # GET /voices — shells out to `say -v '?'`, cached
+├── speech_bridge.h/.m  # NSSpeechSynthesizer wrapper + NDJSON event queue
+├── routes.h/.m         # the four HTTP endpoint handlers
+└── main.m              # entry point: parses args, starts server, runs CFRunLoop
+```
+
+**Threading model:** The HTTP server runs on a background pthread (thread-per-connection). The main thread runs `CFRunLoopRun()` to keep the run loop alive — this is required for `NSSpeechSynthesizer` delegate callbacks (`willSpeakWord`) to fire. This division is load-bearing; do not merge the threads.
+
+**Speech engine:** A single global `NSSpeechSynthesizer` instance, guarded by `NSLock`. One utterance at a time — new requests supersede the current one, and the previous session receives a `finished` event with `completed:false`. The `sender !== synth` identity check in the delegate prevents stray callbacks from a superseded synthesizer from corrupting a newer request's stream.
 
 ## License
 
