@@ -81,9 +81,12 @@ static double estimate_duration_seconds(size_t word_count, float rate_wpm)
  * the full response body, then frees the intermediate buffer. */
 static void send_json_response(int fd, int status_code, const char *status_text, id object)
 {
+	LOG_TRACE(@"routes: serializing JSON response (status=%d)", status_code);
+
 	size_t len;
 	char  *text = json_serialize_alloc(object, &len);
 	if (!text) {
+		LOG_ERROR(@"routes: JSON serialization failed");
 		static const char fallback[] = "{\"error\":\"internal JSON serialization failure\"}";
 		http_send_response(fd,
 		                   500,
@@ -93,6 +96,8 @@ static void send_json_response(int fd, int status_code, const char *status_text,
 		                   strlen(fallback));
 		return;
 	}
+
+	LOG_TRACE(@"routes: JSON response serialized (%zu bytes)", len);
 	http_send_response(fd, status_code, status_text, "application/json", text, len);
 	free(text);
 }
@@ -113,6 +118,8 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
              config:(ServerConfig *)config
            clientIP:(NSString *)clientIP
 {
+	LOG_TRACE(@"routes: POST / — validating request");
+
 	if (req.body == nil || req.body.length == 0 || is_blank([req.body UTF8String])) {
 		LOG_WARN(@"%@ POST / — 400 empty body", clientIP);
 		send_json_error(fd, 400, "Bad Request", "request body must be non-empty text to speak");
@@ -123,9 +130,15 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 	NSString *speedHeader  = http_get_header(req, @"TTS-Speed");
 	NSString *ndjsonHeader = http_get_header(req, @"ndjson");
 
+	LOG_TRACE(@"routes: headers — voice=%@, speed=%@, ndjson=%@",
+	          voiceHeader ? voiceHeader : @"(none)",
+	          speedHeader ? speedHeader : @"(none)",
+	          ndjsonHeader ? ndjsonHeader : @"(none)");
+
 	float rate = config.defaultRate;
 	if (speedHeader) {
 		rate = map_speed_to_rate(atoi([speedHeader UTF8String]));
+		LOG_TRACE(@"routes: speed mapped to rate=%.0f wpm", (double) rate);
 	}
 
 	BOOL wantsNDJSON = YES;
@@ -148,6 +161,7 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 	    wantsNDJSON ? @"true" : @"false");
 
 	if (wantsNDJSON) {
+		LOG_TRACE(@"routes: starting chunked NDJSON response");
 		http_begin_chunked_response(fd, "application/x-ndjson");
 
 		/* Written before speech begins, so the client learns the estimate
@@ -163,31 +177,38 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 			char with_newline[1200];
 			int  written = snprintf(with_newline, sizeof(with_newline), "%s\n", est_text);
 			if (written > 0 && (size_t) written < sizeof(with_newline)) {
+				LOG_TRACE(@"routes: sending estimate event (%d bytes)", written);
 				http_write_chunk(fd, with_newline, (size_t) written);
 			}
 			free(est_text);
 		}
 	}
 
+	LOG_TRACE(@"routes: creating session and starting speech");
 	VerbatimSession *session = [[VerbatimSession alloc] init];
 	[SpeechBridge speakWithSession:session text:req.body rate:rate voiceName:voiceHeader];
 
 	if (wantsNDJSON) {
+		LOG_TRACE(@"routes: streaming NDJSON events");
 		NSString *line;
 		while ((line = [session nextEvent]) != nil) {
 			const char *lineCstr = [line UTF8String];
 			char        with_newline[1026];
 			int         written = snprintf(with_newline, sizeof(with_newline), "%s\n", lineCstr);
 			if (written > 0 && (size_t) written < sizeof(with_newline)) {
+				LOG_TRACE(@"routes: writing chunk (%d bytes)", written);
 				http_write_chunk(fd, with_newline, (size_t) written);
 			}
 		}
+		LOG_TRACE(@"routes: NDJSON stream complete");
 		http_end_chunks(fd);
 	} else {
 		/* ndjson: false — drain to completion, then a small status response. */
+		LOG_TRACE(@"routes: draining events (non-streaming mode)");
 		while ([session nextEvent] != nil) {
 			/* discard — caller only wants completion, not the events */
 		}
+		LOG_TRACE(@"routes: sending completion response");
 		send_json_response(fd, 200, "OK", @{
 			@"status": @"done",
 			@"word_count": @(word_count),
@@ -203,13 +224,16 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 {
 	(void) req;
 	LOG_INFO(@"%@ POST /stop", clientIP);
+	LOG_TRACE(@"routes: calling SpeechBridge.stop");
 	[SpeechBridge stop];
+	LOG_TRACE(@"routes: sending stopped response");
 	send_json_response(fd, 200, "OK", @{ @"status": @"stopped" });
 }
 
 + (void)statusWithFD:(int)fd request:(HttpRequest *)req clientIP:(NSString *)clientIP
 {
 	(void) req;
+	LOG_TRACE(@"routes: GET /status — checking speech state");
 	BOOL speaking = [SpeechBridge isSpeaking];
 	LOG_INFO(@"%@ GET /status — speaking: %@", clientIP, speaking ? @"true" : @"false");
 	send_json_response(fd, 200, "OK", @{ @"speaking": @(speaking) });
@@ -218,6 +242,7 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 + (void)voicesWithFD:(int)fd request:(HttpRequest *)req clientIP:(NSString *)clientIP
 {
 	(void) req;
+	LOG_TRACE(@"routes: GET /voices — fetching voice list");
 	NSArray<VoiceInfo *> *voices = voicesList();
 	LOG_INFO(@"%@ GET /voices — returning %lu voices", clientIP, (unsigned long) voices.count);
 
@@ -229,11 +254,13 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 		}];
 	}
 
+	LOG_TRACE(@"routes: sending %lu voice entries", (unsigned long) arr.count);
 	send_json_response(fd, 200, "OK", arr);
 }
 
 + (void)notFoundWithFD:(int)fd
 {
+	LOG_TRACE(@"routes: sending 404 Not Found");
 	const char *body = "{\"error\":\"not found\"}";
 	http_send_response(fd, 404, "Not Found", "application/json", body, strlen(body));
 }

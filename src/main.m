@@ -31,6 +31,7 @@
 
 static void *server_thread_fn(void *arg)
 {
+	LOG_TRACE(@"main: server thread started");
 	ServerConfig *config = (__bridge ServerConfig *) arg;
 	http_server_run(config); /* never returns on success */
 	LOG_FATAL(@"http server thread exited unexpectedly");
@@ -40,12 +41,20 @@ static void *server_thread_fn(void *arg)
 int main(int argc, char *argv[])
 {
 	@autoreleasepool {
+		// 0. Initialise logger with default level so early LOG_* calls work.
+		//    Re-initialise with the user-specified level after argv parsing.
+		[Logger init:LogLevelInfo];
+
+		LOG_TRACE(@"main: starting verbatimd (argc=%d)", argc);
+
 		// 1. Parse argv into a CommandLineArguments object.
 		//    Returns nil on parse error OR -h/--help (usage is already
 		//    printed to stderr in both cases).
+		LOG_TRACE(@"main: parsing command line arguments");
 		CommandLineArguments *args = [CommandLineArguments parseArgc:argc argv:argv];
 
 		if (!args) {
+			LOG_TRACE(@"main: argument parsing failed or --help/--version");
 			return EXIT_FAILURE;
 		}
 
@@ -54,6 +63,7 @@ int main(int argc, char *argv[])
 		LogLevel level;
 
 		if (![args resolveLogLevel:&level]) {
+			LOG_TRACE(@"main: invalid log-level '%s'", [args.logLevel UTF8String]);
 			fprintf(stderr,
 			        "error: invalid --log-level '%s' "
 			        "(expected off|fatal|error|warn|info|debug|trace)\n",
@@ -61,7 +71,8 @@ int main(int argc, char *argv[])
 			return EXIT_FAILURE;
 		}
 
-		// 3. Initialise the logger before any LOG_* macro is used.
+		// 3. Re-initialise logger with user-specified level.
+		LOG_TRACE(@"main: re-initializing logger at level=%ld", (long) level);
 		[Logger init:level];
 
 		LOG_INFO(@"verbatim-d starting: host=%@ port=%hu rate=%.1f wpm log-level=%@",
@@ -72,26 +83,31 @@ int main(int argc, char *argv[])
 
 		// 4. Build the ServerConfig the HTTP layer needs.  Heap-allocated
 		//    so it outlives main() for as long as the server thread runs.
+		LOG_TRACE(@"main: creating ServerConfig");
 		ServerConfig *config = [[ServerConfig alloc] init];
 		config.host          = args.host;
 		config.port          = args.port;
 		config.defaultRate   = args.rate;
 
 		// 5. Validate all arguments before starting the server.
+		LOG_TRACE(@"main: validating arguments");
 		NSString *validationError = nil;
 		if (![args validateWithError:&validationError]) {
+			LOG_TRACE(@"main: validation failed — %@", validationError);
 			fprintf(stderr, "error: %s\n", [validationError UTF8String]);
 			return EXIT_FAILURE;
 		}
 
 		// 6. Run the HTTP server on its own thread; the main thread is
 		//    reserved for the run loop below.
+		LOG_TRACE(@"main: spawning server thread");
 		pthread_t server_thread;
 		if (pthread_create(&server_thread, NULL, server_thread_fn, (__bridge void *) config) != 0) {
 			LOG_FATAL(@"could not start HTTP server thread");
 			return EXIT_FAILURE;
 		}
 		pthread_detach(server_thread);
+		LOG_TRACE(@"main: server thread detached");
 
 		LOG_DEBUG(
 		    @"entering CFRunLoopRun() — blocking main thread for NSSpeechSynthesizer callbacks");

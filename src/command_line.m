@@ -102,17 +102,22 @@
 
 + (nullable instancetype)parseArgc:(int)argc argv:(char *const _Nonnull *)argv
 {
+	LOG_TRACE(@"cmdline: parsing %d arguments", argc);
+
 	CommandLineArguments *args = [[CommandLineArguments alloc] init];
 
 	for (int i = 1; i < argc; i++) {
 		NSString *token = [NSString stringWithUTF8String:argv[i]];
+		LOG_TRACE(@"cmdline: argv[%d] = '%@'", i, token);
 
 		if ([token isEqualToString:@"-h"] || [token isEqualToString:@"--help"]) {
+			LOG_TRACE(@"cmdline: --help requested");
 			[self printUsage:argv[0]];
 			exit(EXIT_SUCCESS);
 		}
 
 		if ([token isEqualToString:@"-V"] || [token isEqualToString:@"--version"]) {
+			LOG_TRACE(@"cmdline: --version requested");
 			[self printVersion:argv[0]];
 			exit(EXIT_SUCCESS);
 		}
@@ -122,6 +127,9 @@
 
 		if ([token hasPrefix:@"--"]) {
 			[self splitLongOpt:token name:&name value:&inlineValue];
+			LOG_TRACE(@"cmdline: split long option -> name='%@', value='%@'",
+			          name,
+			          inlineValue ? inlineValue : @"(none)");
 		}
 
 		if ([name isEqualToString:@"-H"] || [name isEqualToString:@"--host"]) {
@@ -132,10 +140,12 @@
 			                                idx:&i];
 
 			if (!value) {
+				LOG_TRACE(@"cmdline: --host missing value");
 				[self printUsage:argv[0]];
 				return nil;
 			}
 
+			LOG_TRACE(@"cmdline: setting host='%@'", value);
 			args.host = value;
 		} else if ([name isEqualToString:@"-P"] || [name isEqualToString:@"--port"]) {
 			NSString *value = [self valueForOpt:name
@@ -145,11 +155,13 @@
 			                                idx:&i];
 
 			if (!value) {
+				LOG_TRACE(@"cmdline: --port missing value");
 				[self printUsage:argv[0]];
 				return nil;
 			}
 
 			args.port = (unsigned short) strtoul([value UTF8String], NULL, 10);
+			LOG_TRACE(@"cmdline: setting port=%hu", args.port);
 		} else if ([name isEqualToString:@"-R"] || [name isEqualToString:@"--rate"]) {
 			NSString *value = [self valueForOpt:name
 			                        inlineValue:inlineValue
@@ -158,11 +170,13 @@
 			                                idx:&i];
 
 			if (!value) {
+				LOG_TRACE(@"cmdline: --rate missing value");
 				[self printUsage:argv[0]];
 				return nil;
 			}
 
 			args.rate = strtof([value UTF8String], NULL);
+			LOG_TRACE(@"cmdline: setting rate=%.1f", (double) args.rate);
 		} else if ([name isEqualToString:@"-L"] || [name isEqualToString:@"--log-level"]) {
 			NSString *value = [self valueForOpt:name
 			                        inlineValue:inlineValue
@@ -171,18 +185,26 @@
 			                                idx:&i];
 
 			if (!value) {
+				LOG_TRACE(@"cmdline: --log-level missing value");
 				[self printUsage:argv[0]];
 				return nil;
 			}
 
 			args.logLevel = value;
+			LOG_TRACE(@"cmdline: setting logLevel='%@'", value);
 		} else {
+			LOG_TRACE(@"cmdline: unrecognized option '%@'", token);
 			fprintf(stderr, "error: unrecognized option '%s'\n", [token UTF8String]);
 			[self printUsage:argv[0]];
 			return nil;
 		}
 	}
 
+	LOG_TRACE(@"cmdline: parsing complete — host=%@ port=%hu rate=%.1f logLevel=%@",
+	          args.host,
+	          args.port,
+	          (double) args.rate,
+	          args.logLevel);
 	return args;
 }
 
@@ -223,14 +245,19 @@
 
 - (BOOL)validateWithError:(NSString **)error
 {
+	LOG_TRACE(@"cmdline: validating arguments");
+
 	// Validate host
 	if (self.host.length == 0) {
+		LOG_TRACE(@"cmdline: validation failed — host is empty");
 		if (error)
 			*error = @"host cannot be empty";
 		return NO;
 	}
 
 	if (self.host.length > 253) {
+		LOG_TRACE(@"cmdline: validation failed — host too long (%lu chars)",
+		          (unsigned long) self.host.length);
 		if (error)
 			*error = @"host exceeds maximum length (253 characters)";
 		return NO;
@@ -238,6 +265,7 @@
 
 	// Validate port (1024-65535)
 	if (self.port < 1024) {
+		LOG_TRACE(@"cmdline: validation failed — port %hu out of range", self.port);
 		if (error)
 			*error = @"port must be between 1024 and 65535";
 		return NO;
@@ -245,6 +273,7 @@
 
 	// Validate rate (1-1000 wpm, reasonable range for NSSpeechSynthesizer)
 	if (self.rate < 1.0f || self.rate > 1000.0f) {
+		LOG_TRACE(@"cmdline: validation failed — rate %.1f out of range", (double) self.rate);
 		if (error)
 			*error = @"rate must be between 1 and 1000 words per minute";
 		return NO;
@@ -253,11 +282,13 @@
 	// Validate log level is recognised
 	LogLevel level;
 	if (![self resolveLogLevel:&level]) {
+		LOG_TRACE(@"cmdline: validation failed — invalid log-level '%@'", self.logLevel);
 		if (error)
 			*error = [NSString stringWithFormat:@"invalid log-level '%@'", self.logLevel];
 		return NO;
 	}
 
+	LOG_TRACE(@"cmdline: validation passed");
 	return YES;
 }
 

@@ -14,12 +14,14 @@ char *json_serialize_alloc(id object, size_t *out_len)
 	if (out_len)
 		*out_len = 0;
 
+	LOG_TRACE(@"json: validating object");
 	if (![NSJSONSerialization isValidJSONObject:object]) {
 		LOG_ERROR(@"json: object is not valid top-level JSON (must be "
 		          @"NSDictionary/NSArray of strings/numbers/booleans)");
 		return NULL;
 	}
 
+	LOG_TRACE(@"json: serializing object");
 	NSError *error = nil;
 	NSData  *data  = [NSJSONSerialization dataWithJSONObject:object options:0 error:&error];
 
@@ -29,7 +31,9 @@ char *json_serialize_alloc(id object, size_t *out_len)
 	}
 
 	size_t len = data.length;
-	char  *buf = malloc(len + 1);
+	LOG_TRACE(@"json: serialized %zu bytes", len);
+
+	char *buf = malloc(len + 1);
 
 	if (!buf) {
 		LOG_ERROR(@"json: malloc(%zu) failed", len + 1);
@@ -42,5 +46,6 @@ char *json_serialize_alloc(id object, size_t *out_len)
 	if (out_len)
 		*out_len = len;
 
+	LOG_TRACE(@"json: serialization complete (%zu bytes)", len);
 	return buf;
 }

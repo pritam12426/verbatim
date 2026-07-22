@@ -12,9 +12,17 @@ Single binary, no runtime dependencies. 100% Objective-C. Listens on
 - macOS with Xcode Command Line Tools (`xcode-select --install`)
 - Foundation + AppKit frameworks (ships with macOS)
 
+### System requirements
+
+| Tool          | Version                    | Check command   |
+| ------------- | -------------------------- | --------------- |
+| Macos version | macOS Tahoe 26             | sw_vers         |
+| clang version | Apple clang version 21.0.0 | clang --version |
+
 ## Build
 
 ```sh
+make help         # show available targets
 make              # release build (-O3)
 make debug        # debug build (ASan, UBSan, -g3)
 make help         # show all targets and build options
@@ -24,7 +32,7 @@ make help         # show all targets and build options
 
 ```sh
 ./verbatimd                              # default: 127.0.0.1:5959
-./verbatimd --host 0.0.0.0 --port 8080  # custom bind
+./verbatimd --host 0.0.0.0 --port 8080   # custom bind
 ./verbatimd --log-level trace            # verbose per-word logging
 ```
 

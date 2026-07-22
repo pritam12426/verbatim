@@ -39,6 +39,14 @@
 // ---------------------------------------------------------------------------
 
 @implementation VoiceInfo
+- (instancetype)init
+{
+	self = [super init];
+	if (self) {
+		LOG_TRACE(@"voices: VoiceInfo created");
+	}
+	return self;
+}
 @end
 
 // ---------------------------------------------------------------------------
@@ -69,10 +77,12 @@ static char *run_say_voice_list(void)
 		LOG_ERROR(@"voices: popen failed for `say -v '?'`");
 		return NULL;
 	}
+	LOG_TRACE(@"voices: pipe opened successfully");
 
 	size_t cap = 8192, len = 0;
 	char  *buf = malloc(cap);
 	if (!buf) {
+		LOG_ERROR(@"voices: malloc failed for read buffer");
 		pclose(pipe);
 		return NULL;
 	}
@@ -80,15 +90,18 @@ static char *run_say_voice_list(void)
 	size_t n;
 	while ((n = fread(buf + len, 1, cap - len - 1, pipe)) > 0) {
 		len += n;
+		LOG_TRACE(@"voices: read %zu bytes (total=%zu)", n, len);
 		if (len + 1 >= cap) {
 			cap         *= 2;
 			char *grown  = realloc(buf, cap);
 			if (!grown) {
+				LOG_ERROR(@"voices: realloc failed (cap=%zu)", cap);
 				free(buf);
 				pclose(pipe);
 				return NULL;
 			}
 			buf = grown;
+			LOG_TRACE(@"voices: buffer grown to %zu bytes", cap);
 		}
 	}
 	buf[len] = '\0';
@@ -104,11 +117,13 @@ static char *run_say_voice_list(void)
 
 static NSArray<VoiceInfo *> *parse(const char *output)
 {
+	LOG_TRACE(@"voices: parsing voice list output");
 	regex_t re;
 	if (regcomp(&re, "^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#", REG_EXTENDED) != 0) {
 		LOG_ERROR(@"voices: failed to compile regex");
 		return @[];
 	}
+	LOG_TRACE(@"voices: regex compiled successfully");
 
 	NSMutableArray<VoiceInfo *> *results = [NSMutableArray
 	    arrayWithCapacity:VOICES_CAPACITY_INITIAL];
@@ -127,6 +142,8 @@ static NSArray<VoiceInfo *> *parse(const char *output)
 			line[line_len] = '\0';
 			lines_checked++;
 
+			LOG_TRACE(@"voices: checking line %d: '%.60s...'", lines_checked, line);
+
 			regmatch_t m[3];
 			if (regexec(&re, line, 3, m, 0) == 0) {
 				int name_len = (int) (m[1].rm_eo - m[1].rm_so);
@@ -143,6 +160,7 @@ static NSArray<VoiceInfo *> *parse(const char *output)
 				v.language   = [NSString stringWithUTF8String:lang_buf];
 				[results addObject:v];
 				lines_matched++;
+				LOG_TRACE(@"voices: matched voice '%@' (%@)", v.name, v.language);
 			}
 		}
 
@@ -177,6 +195,7 @@ NSArray<VoiceInfo *> *voicesList(void)
 		return @[];
 	}
 
+	LOG_TRACE(@"voices: parsing output (%zu bytes)", strlen(output));
 	NSArray<VoiceInfo *> *voices = parse(output);
 	free(output);
 

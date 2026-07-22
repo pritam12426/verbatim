@@ -59,6 +59,7 @@
 		_condition = [[NSCondition alloc] init];
 		_lines     = [NSMutableArray array];
 		_done      = NO;
+		LOG_TRACE(@"speech: event queue initialized");
 	}
 	return self;
 }
@@ -77,6 +78,7 @@
 	self = [super init];
 	if (self) {
 		_queue = [[VerbatimEventQueue alloc] init];
+		LOG_TRACE(@"speech: session created (%p)", self);
 	}
 	return self;
 }
@@ -84,6 +86,9 @@
 - (NSString *)nextEvent
 {
 	[_queue.condition lock];
+	LOG_TRACE(@"speech: nextEvent — waiting for event (queue=%lu, done=%d)",
+	          (unsigned long) _queue.lines.count,
+	          _queue.done);
 	while (_queue.lines.count == 0 && !_queue.done) {
 		[_queue.condition wait];
 	}
@@ -92,10 +97,13 @@
 		NSString *line = _queue.lines[0];
 		[_queue.lines removeObjectAtIndex:0];
 		[_queue.condition unlock];
+		LOG_TRACE(@"speech: nextEvent — got event (remaining=%lu)",
+		          (unsigned long) _queue.lines.count);
 		return line;
 	}
 
 	[_queue.condition unlock];
+	LOG_TRACE(@"speech: nextEvent — stream ended");
 	return nil;
 }
 
@@ -107,6 +115,9 @@
 		_queue.done = YES;
 	[_queue.condition signal];
 	[_queue.condition unlock];
+	LOG_TRACE(@"speech: pushEvent — queued (terminal=%d, queue=%lu)",
+	          terminal,
+	          (unsigned long) _queue.lines.count);
 }
 
 @end
@@ -205,13 +216,19 @@ static NSString *resolve_voice_name(NSString *name)
 	NSString            *target = [name lowercaseString];
 	NSArray<NSString *> *voices = [NSSpeechSynthesizer availableVoices];
 
+	LOG_TRACE(@"speech: resolving voice '%@' (%lu voices available)",
+	          name,
+	          (unsigned long) voices.count);
+
 	for (NSString *voiceId in voices) {
 		NSDictionary *attrs     = [NSSpeechSynthesizer attributesForVoice:voiceId];
 		NSString     *voiceName = attrs[NSVoiceName];
 		if (voiceName && [[voiceName lowercaseString] isEqualToString:target]) {
+			LOG_TRACE(@"speech: resolved voice '%@' -> '%@'", name, voiceId);
 			return voiceId;
 		}
 	}
+	LOG_TRACE(@"speech: voice '%@' not found, using default", name);
 	return nil;
 }
 
@@ -227,6 +244,7 @@ static NSString *resolve_voice_name(NSString *name)
                voiceName:(NSString *)voiceName
 {
 	[engine_lock() lock];
+	LOG_TRACE(@"speech: speak — locked engine");
 
 	/* Interrupt + notify whatever was previously speaking — inlined here
 	 * rather than calling -stop to avoid re-locking g_engine_lock (NSLock
@@ -261,6 +279,8 @@ static NSString *resolve_voice_name(NSString *name)
 		return;
 	}
 
+	LOG_TRACE(@"speech: NSSpeechSynthesizer created (%p)", synth);
+
 	VerbatimSpeechDelegate *delegate = [[VerbatimSpeechDelegate alloc] init];
 	synth.delegate                   = delegate;
 	synth.rate                       = rate;
@@ -270,19 +290,23 @@ static NSString *resolve_voice_name(NSString *name)
 	g_current_session = session;
 
 	[engine_lock() unlock];
+	LOG_TRACE(@"speech: speak — unlocked engine");
 
 	/* Now that the lock is released, notify the previous session and
 	 * actually interrupt its synth — same ordering as the old .mm file
 	 * (stopSpeaking happens before the new startSpeakingString call). */
 	if (previous_session) {
+		LOG_TRACE(@"speech: notifying previous session of interruption");
 		[previous_session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
 	}
 	if (previous_synth) {
+		LOG_TRACE(@"speech: stopping previous synthesizer");
 		[previous_synth stopSpeaking];
 	}
 
 	[session pushEvent:@"{\"event\":\"started\"}" terminal:NO];
 
+	LOG_TRACE(@"speech: calling startSpeakingString");
 	BOOL ok = [synth startSpeakingString:text];
 	if (!ok) {
 		LOG_ERROR(@"speech: startSpeakingString returned NO");
@@ -297,11 +321,13 @@ static NSString *resolve_voice_name(NSString *name)
 		}
 		[engine_lock() unlock];
 	}
+	LOG_TRACE(@"speech: speak — done");
 }
 
 + (void)stop
 {
 	[engine_lock() lock];
+	LOG_TRACE(@"speech: stop — locked engine");
 	if (!g_current_session) {
 		LOG_DEBUG(@"speech: stop() called but nothing is speaking — nothing to do");
 		[engine_lock() unlock];
@@ -316,9 +342,11 @@ static NSString *resolve_voice_name(NSString *name)
 	g_delegate        = nil;
 	g_current_session = nil;
 	[engine_lock() unlock];
+	LOG_TRACE(@"speech: stop — unlocked engine");
 
 	[session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
 	[synth stopSpeaking];
+	LOG_TRACE(@"speech: stop — done");
 }
 
 + (BOOL)isSpeaking
@@ -326,6 +354,7 @@ static NSString *resolve_voice_name(NSString *name)
 	[engine_lock() lock];
 	BOOL speaking = g_current_session != nil;
 	[engine_lock() unlock];
+	LOG_TRACE(@"speech: isSpeaking = %d", speaking);
 	return speaking;
 }
 

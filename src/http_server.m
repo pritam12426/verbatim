@@ -70,9 +70,11 @@ NSString *http_get_header(HttpRequest *req, NSString *name)
 {
 	for (HttpHeader *h in req.headers) {
 		if ([h.name caseInsensitiveCompare:name] == NSOrderedSame) {
+			LOG_TRACE(@"http: header '%@' = '%@'", name, h.value);
 			return h.value;
 		}
 	}
+	LOG_TRACE(@"http: header '%@' not found", name);
 	return nil;
 }
 
@@ -83,6 +85,8 @@ void http_send_response(int         fd,
                         const char *body,
                         size_t      body_len)
 {
+	LOG_TRACE(@"http: sending response %d %s (%zu bytes)", status_code, status_text, body_len);
+
 	char header[512];
 	int  n = snprintf(header,
                      sizeof(header),
@@ -113,6 +117,8 @@ void http_send_response(int         fd,
 
 void http_begin_chunked_response(int fd, const char *content_type)
 {
+	LOG_TRACE(@"http: starting chunked response (content-type: %s)", content_type);
+
 	char header[256];
 	int  n = snprintf(header,
                      sizeof(header),
@@ -138,6 +144,8 @@ void http_write_chunk(int fd, const char *data, size_t len)
 	if (len == 0)
 		return; /* a zero-length chunk would be misread as the terminator */
 
+	LOG_TRACE(@"http: writing chunk (%zu bytes)", len);
+
 	char size_line[32];
 	int  n = snprintf(size_line, sizeof(size_line), "%zx\r\n", len);
 
@@ -153,6 +161,7 @@ void http_write_chunk(int fd, const char *data, size_t len)
 
 void http_end_chunks(int fd)
 {
+	LOG_TRACE(@"http: ending chunked response");
 	send(fd, "0\r\n\r\n", 5, 0);
 }
 
@@ -179,11 +188,13 @@ static char *recv_until_headers_done(int fd, size_t *total_len, size_t *header_e
 				return NULL;
 			}
 			buf = grown;
+			LOG_TRACE(@"http: recv buffer grown to %zu bytes", cap);
 		}
 
 		ssize_t n = recv(fd, buf + len, cap - len - 1, 0);
 
 		if (n <= 0) {
+			LOG_TRACE(@"http: recv returned %zd (fd=%d)", n, fd);
 			free(buf);
 			return NULL;
 		}
@@ -191,11 +202,14 @@ static char *recv_until_headers_done(int fd, size_t *total_len, size_t *header_e
 		len      += (size_t) n;
 		buf[len]  = '\0';
 
+		LOG_TRACE(@"http: recv %zd bytes (total=%zu)", n, len);
+
 		char *found = strstr(buf, "\r\n\r\n");
 
 		if (found) {
 			*total_len  = len;
 			*header_end = (size_t) (found + 4 - buf);
+			LOG_TRACE(@"http: headers complete (%zu bytes, body at offset %zu)", len, *header_end);
 			return buf;
 		}
 
@@ -217,17 +231,23 @@ static HttpRequest *parse_head(const char *buf, size_t header_end)
 
 	const char *line_end = strstr(buf, "\r\n");
 
-	if (!line_end || line_end - buf >= (long) header_end)
+	if (!line_end || line_end - buf >= (long) header_end) {
+		LOG_TRACE(@"http: parse_head failed — no request line found");
 		return nil;
+	}
 
 	char method[8], path[512], version[16];
 	int  matched = sscanf(buf, "%7s %511s %15s", method, path, version);
 
-	if (matched != 3)
+	if (matched != 3) {
+		LOG_TRACE(@"http: parse_head failed — sscanf matched %d != 3", matched);
 		return nil;
+	}
 
 	req.method = [NSString stringWithUTF8String:method];
 	req.path   = [NSString stringWithUTF8String:path];
+
+	LOG_TRACE(@"http: parsed request line: %@ %@ %s", req.method, req.path, version);
 
 	const char *cursor = line_end + 2;
 	while (cursor < buf + header_end && (int) req.headers.count < HTTP_MAX_HEADERS) {
@@ -260,9 +280,13 @@ static HttpRequest *parse_head(const char *buf, size_t header_end)
                                                length:value_len
                                              encoding:NSUTF8StringEncoding];
 			[req.headers addObject:h];
+
+			LOG_TRACE(@"http: parsed header '%@' = '%@'", h.name, h.value);
 		}
 		cursor = next_line + 2;
 	}
+
+	LOG_TRACE(@"http: parsed %lu headers", (unsigned long) req.headers.count);
 	return req;
 }
 
@@ -282,6 +306,8 @@ static void *handle_connection(void *arg)
 	ServerConfig           *config = (__bridge_transfer ServerConfig *) a->config_bridged;
 	free(a);
 
+	LOG_TRACE(@"http: new connection on fd=%d", fd);
+
 	struct sockaddr_in peer;
 	socklen_t          peer_len                        = sizeof(peer);
 	char               client_ip_cstr[INET_ADDRSTRLEN] = "?";
@@ -296,6 +322,7 @@ static void *handle_connection(void *arg)
 	char  *raw = recv_until_headers_done(fd, &total_len, &header_end);
 
 	if (!raw) {
+		LOG_TRACE(@"http: connection closed before headers complete (fd=%d)", fd);
 		close(fd);
 		return NULL;
 	}
@@ -319,9 +346,11 @@ static void *handle_connection(void *arg)
 		char cl_buf[32];
 		snprintf(cl_buf, sizeof(cl_buf), "%s", [content_length_hdr UTF8String]);
 		content_length = (size_t) strtoul(cl_buf, NULL, 10);
+		LOG_TRACE(@"http: Content-Length = %zu", content_length);
 	}
 
 	if (content_length > 0) {
+		LOG_TRACE(@"http: reading body (%zu bytes, have %zu)", content_length, body_have);
 		size_t         to_copy  = body_have < content_length ? body_have : content_length;
 		NSMutableData *bodyData = [[NSMutableData alloc] initWithCapacity:content_length];
 		[bodyData appendBytes:raw + header_end length:to_copy];
@@ -331,11 +360,14 @@ static void *handle_connection(void *arg)
 			size_t  chunk_size = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
 			ssize_t n          = recv(fd, chunk, chunk_size, 0);
 
-			if (n <= 0)
+			if (n <= 0) {
+				LOG_TRACE(@"http: body recv returned %zd (remaining=%zu)", n, remaining);
 				break;
+			}
 
 			[bodyData appendBytes:chunk length:(size_t) n];
 			remaining -= (size_t) n;
+			LOG_TRACE(@"http: body recv %zd bytes (remaining=%zu)", n, remaining);
 		}
 		req.body = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
 	}
@@ -356,6 +388,7 @@ static void *handle_connection(void *arg)
 		[Routes notFoundWithFD:fd];
 	}
 
+	LOG_TRACE(@"http: closing connection (fd=%d)", fd);
 	close(fd);
 	return NULL;
 }
@@ -366,6 +399,8 @@ static void *handle_connection(void *arg)
 
 int http_server_run(ServerConfig *config)
 {
+	LOG_DEBUG(@"http: initializing server socket");
+
 	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
 	if (server_fd < 0) {
@@ -373,8 +408,11 @@ int http_server_run(ServerConfig *config)
 		return 1;
 	}
 
+	LOG_TRACE(@"http: server socket created (fd=%d)", server_fd);
+
 	int yes = 1;
 	setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+	LOG_TRACE(@"http: SO_REUSEADDR enabled");
 
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
@@ -392,12 +430,14 @@ int http_server_run(ServerConfig *config)
 		close(server_fd);
 		return 1;
 	}
+	LOG_DEBUG(@"http: bound to %@:%u", config.host, config.port);
 
 	if (listen(server_fd, 16) < 0) {
 		LOG_FATAL(@"http: listen() failed: %s", strerror(errno));
 		close(server_fd);
 		return 1;
 	}
+	LOG_DEBUG(@"http: listening (backlog=16)");
 
 	LOG_INFO(@"verbatimd listening on http://%@:%u", config.host, config.port);
 
@@ -410,6 +450,8 @@ int http_server_run(ServerConfig *config)
 			LOG_WARN(@"http: accept() failed: %s", strerror(errno));
 			continue;
 		}
+
+		LOG_TRACE(@"http: accepted connection (fd=%d)", client_fd);
 
 		struct connection_args *a = malloc(sizeof(struct connection_args));
 		a->fd                     = client_fd;
@@ -425,5 +467,6 @@ int http_server_run(ServerConfig *config)
 		}
 
 		pthread_detach(tid);
+		LOG_TRACE(@"http: spawned thread for fd=%d", client_fd);
 	}
 }
