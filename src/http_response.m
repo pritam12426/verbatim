@@ -21,8 +21,7 @@
  *     Transfer-Encoding: chunked\r\n
  *     Connection: close\r\n
  *     \r\n
- *     1e\r\n{"event":"estimate","word_count":5}\n\r\n
- *     22\r\n{"event":"word","start":0,"length":5}\r\n
+ *     1e\r\n{"event":"word","start":0,"length":5}\r\n
  *     ...
  *     0\r\n
  *     \r\n

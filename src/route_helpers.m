@@ -1,8 +1,8 @@
 /*
  * route_helpers.m — shared utility functions for route handlers.
  *
- * Stateless helpers: input validation, speed mapping, word counting,
- * duration estimation, and JSON response serialization.
+ * Stateless helpers: input validation, speed mapping,
+ * and JSON response serialization.
  *
  * These are called from routes.m and route_speak.m.  They have no
  * state of their own — every function is pure (same inputs always
@@ -35,38 +35,6 @@
 	           == 0;
 }
 
-// Counts whitespace-delimited words in the string.
-//
-// Walks through each character, tracking whether we're "in a word"
-// or "between words".  A word boundary is any whitespace character
-// (space, tab, newline, carriage return).  This is a simple heuristic
-// that works well for English text and most other languages.
-//
-// Used to estimate speech duration for the "estimate" event:
-//   estimated_seconds = (word_count / rate_wpm) * 60
-- (NSUInteger)countWords
-{
-	if (self.length == 0)
-		return 0;
-
-	NSUInteger count  = 0;
-	BOOL       inWord = NO;
-	NSUInteger length = self.length;
-
-	for (NSUInteger i = 0; i < length; i++) {
-		unichar c = [self characterAtIndex:i];
-		if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-			// Whitespace: we're between words
-			inWord = NO;
-		} else if (!inWord) {
-			// Non-whitespace after whitespace: start of a new word
-			inWord = YES;
-			count++;
-		}
-	}
-	return count;
-}
-
 @end
 
 // ── RouteHelpers — shared route utility class ────────────────────────────────
@@ -93,22 +61,6 @@
 	if (clamped > 10)
 		clamped = 10;
 	return 90.0f + (float) (clamped - 1) * 30.0f;
-}
-
-// ── estimateDurationForWordCount:rateWPM: ────────────────────────────────────
-// Heuristic duration estimate: (word_count / rate_wpm) * 60.
-//
-// This is a rough approximation — actual speech rate varies by
-// word complexity, punctuation, and the specific voice.  But it's
-// good enough for the "estimate" event, which gives the client
-// a ballpark figure before speech begins.
-//
-// Returns seconds as a double.
-+ (double)estimateDurationForWordCount:(NSUInteger)wordCount rateWPM:(float)rateWPM
-{
-	if (rateWPM <= 0.0f)
-		return 0.0;  // Guard against division by zero
-	return ((double) wordCount / (double) rateWPM) * 60.0;
 }
 
 // ── sendJSONResponseWithFD:statusCode:statusText:object: ─────────────────────

@@ -3,8 +3,7 @@
  *
  * Provides common functionality used across all route handlers:
  *   - NSString (RouteHelpers) category for input validation
- *   - RouteHelpers class for speed mapping, duration estimation,
- *     and JSON response helpers
+ *   - RouteHelpers class for speed mapping and JSON response helpers
  *
  * These are factored out of routes.m to avoid code duplication and
  * to keep each route handler focused on its specific logic.
@@ -23,10 +22,6 @@ NS_ASSUME_NONNULL_BEGIN
 // Used to validate that POST / request bodies are non-empty.
 - (BOOL)isBlank;
 
-// Counts whitespace-delimited words in the string.
-// Used to estimate speech duration for the estimate event.
-- (NSUInteger)countWords;
-
 @end
 
 // ── RouteHelpers — shared route utility class ────────────────────────────────
@@ -38,12 +33,6 @@ NS_ASSUME_NONNULL_BEGIN
 // speed 10 maps to 360 WPM (fastest).  Values outside 1-10
 // are clamped to the nearest valid value.
 + (float)mapSpeedToRate:(int)speed;
-
-// Heuristic duration estimate: (word_count / rate_wpm) * 60.
-// Returns seconds.  Used to send the "estimate" event before
-// speech begins, so the client knows approximately how long
-// the utterance will take.
-+ (double)estimateDurationForWordCount:(NSUInteger)wordCount rateWPM:(float)rateWPM;
 
 // Serializes `object` and sends it as a complete JSON response.
 // Uses JSONWriter for serialization and HttpResponse for sending.

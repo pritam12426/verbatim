@@ -1,9 +1,8 @@
 /*
  * route_speak.m — POST / handler (Routes category).
  *
- * The most complex route: validates input, parses headers, computes
- * duration estimates, sets up NDJSON streaming, creates a speech
- * session, and streams/drains events.
+ * The most complex route: validates input, parses headers, sets up
+ * NDJSON streaming, creates a speech session, and streams/drains events.
  *
  * This file is the heart of verbatimd.  It ties together the HTTP
  * layer (parsing, response writing), the speech layer (NSSpeechSynthesizer
@@ -13,17 +12,16 @@
  * Request flow:
  *   1. Validate: body must be non-empty text
  *   2. Parse headers: TTS-Voice, TTS-Speed, ndjson
- *   3. Compute: map speed to rate, estimate duration
+ *   3. Compute: map speed to rate
  *   4. If NDJSON:
  *      a. Begin chunked HTTP response
- *      b. Send "estimate" event (word count + estimated seconds)
- *      c. Create VerbatimSession, start speech via SpeechBridge
- *      d. Stream events from session to HTTP response (blocking pull)
- *      e. End chunks when session signals completion
+ *      b. Create VerbatimSession, start speech via SpeechBridge
+ *      c. Stream events from session to HTTP response (blocking pull)
+ *      d. End chunks when session signals completion
  *   5. If non-NDJSON:
  *      a. Create VerbatimSession, start speech
  *      b. Drain all events (discard them)
- *      c. Send a single JSON response with status + stats
+ *      c. Send a single JSON response with status
  *
  * The NDJSON streaming path is the default and the reason this project
  * exists: real-time, per-word timing events delivered as they happen,
@@ -33,7 +31,6 @@
 #import "route_speak.h"
 
 #import "http_response.h"
-#import "json_writer.h"
 #import "log.h"
 #import "route_helpers.h"
 #import "speech_bridge.h"
@@ -44,13 +41,12 @@
 // Handles POST / — speak text via NSSpeechSynthesizer.
 //
 // This is the most complex route in the project.  It validates the
-// request, parses headers, computes a duration estimate, optionally
-// sets up NDJSON streaming, creates a speech session, and streams
-// events back to the client.
+// request, parses headers, optionally sets up NDJSON streaming,
+// creates a speech session, and streams events back to the client.
 //
 // The NDJSON streaming path is the key feature: the client receives
 // real-time per-word timing events as the synthesizer speaks, allowing
-// it to highlight words, calculate progress, etc.
+// it to highlight words and calculate progress.
 + (void)speakWithFD:(int)fd
             request:(HttpRequest *)req
              config:(ServerConfig *)config
@@ -105,19 +101,11 @@
 		wantsNDJSON = NO;
 	}
 
-	// ── Step 5: Compute duration estimate ────────────────────────────────
-	// Word count is used for the "estimate" event and the non-NDJSON
-	// completion response.  Duration is a rough heuristic.
-	NSUInteger wordCount    = [req.body countWords];
-	double estimatedSeconds = [RouteHelpers estimateDurationForWordCount:wordCount rateWPM:rate];
-
 	// Log the request at INFO level
 	LOG_INFO(
-	    @"%@ POST / — speaking %lu chars (~%lu words, ~%.1fs), voice: %@, rate: %.0f wpm, ndjson: %@",
+	    @"%@ POST / — speaking %lu chars, voice: %@, rate: %.0f wpm, ndjson: %@",
 	    clientIP,
 	    (unsigned long) req.body.length,
-	    (unsigned long) wordCount,
-	    estimatedSeconds,
 	    voiceHeader ? voiceHeader : @"default",
 	    (double) rate,
 	    wantsNDJSON ? @"true" : @"false");
@@ -129,21 +117,6 @@
 		// Begin the chunked HTTP response
 		[HttpResponse beginChunkedWithFD:fd contentType:@"application/x-ndjson"];
 
-		// Send the "estimate" event before speech begins.
-		// This gives the client the word count and estimated duration
-		// so it can prepare (e.g. allocate a progress bar).
-		NSDictionary *estimateDict = @{
-			@"event": @"estimate",
-			@"word_count": @(wordCount),
-			@"estimated_seconds": @(estimatedSeconds),
-		};
-		NSData *estData = [JSONWriter serialize:estimateDict];
-		if (estData) {
-			NSMutableData *chunk = [estData mutableCopy];
-			[chunk appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
-			LOG_TRACE(@"routes: sending estimate event (%lu bytes)", (unsigned long) chunk.length);
-			[HttpResponse writeChunkWithFD:fd data:chunk];
-		}
 	}
 
 	// ── Step 7: Create session and start speech ──────────────────────────
@@ -177,11 +150,7 @@
 			/* discard — caller only wants completion, not the events */
 		}
 		LOG_TRACE(@"routes: sending completion response");
-		NSDictionary *resultDict = @{
-			@"status": @"done",
-			@"word_count": @(wordCount),
-			@"estimated_seconds": @(estimatedSeconds),
-		};
+		NSDictionary *resultDict = @{ @"status": @"done" };
 		[RouteHelpers sendJSONResponseWithFD:fd statusCode:200 statusText:@"OK" object:resultDict];
 	}
 }
