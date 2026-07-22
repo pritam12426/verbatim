@@ -1,22 +1,39 @@
 /*
- * command_line.h — Native Objective-C command-line argument parsing
+ * command_line.h — Native Objective-C command-line argument parsing.
  *
- * A small, dependency-free replacement for GNU argp. Parses argv directly
- * using Foundation, with no C arg-parsing library involved.
+ * A small, dependency-free replacement for GNU argp.  Parses argv
+ * directly using Foundation, with no C arg-parsing library involved.
+ * This eliminates the -largp linker flag and the Homebrew dependency
+ * that the old main.c required.
  *
- * Supported forms per option:
- *   -H VALUE
- *   --host VALUE
- *   --host=VALUE
+ * Supported option forms:
+ *   -H VALUE          Short option with value
+ *   --host VALUE      Long option with space-separated value
+ *   --host=VALUE      Long option with =-separated value
+ *
+ * Supported options:
+ *   -H, --host=HOST         Host to bind to (default: 127.0.0.1)
+ *   -P, --port=PORT         Port to listen on (default: 5959)
+ *   -R, --rate=RATE         Default speaking rate in WPM (default: 175)
+ *   -L, --log-level=LEVEL   Log level (default: info)
+ *   -h, --help              Print usage and exit(0)
+ *   -V, --version           Print version and exit(0)
  *
  * Usage:
  *   CommandLineArguments *args = [CommandLineArguments parseArgc:argc argv:argv];
  *   if (!args) {
- *       // parseArgc:argv: already printed an error/usage message
+ *       // parseArgc:argv: already printed an error/usage message to stderr
  *       exit(EXIT_FAILURE);
  *   }
  *   NSLog(@"host=%@ port=%hu rate=%.1f logLevel=%@",
  *         args.host, args.port, args.rate, args.logLevel);
+ *
+ * Error handling:
+ *   - parseArgc:argv: returns nil on any parse error or if -h/-V is
+ *     requested (the latter two print their message and exit directly).
+ *   - validateWithError: performs semantic validation (range checks)
+ *     after parsing is complete.
+ *   - resolveLogLevel: converts the string "info" to LogLevelInfo, etc.
  */
 
 #import <Foundation/Foundation.h>
@@ -25,11 +42,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// ── CommandLineArguments ─────────────────────────────────────────────────────
+// Holds the parsed command-line arguments with sensible defaults.
+// Created by +parseArgc:argv:, validated by -validateWithError:,
+// and consumed by main.m to configure the HTTP server and logger.
 @interface CommandLineArguments : NSObject
 
 @property(nonatomic, copy) NSString *host;      // default: 127.0.0.1
 @property(nonatomic) unsigned short  port;      // default: 5959
-@property(nonatomic) float           rate;      // default: 175
+@property(nonatomic) float           rate;      // default: 175 (words per minute)
 @property(nonatomic, copy) NSString *logLevel;  // default: "info"
 
 // Parses argv (as passed to main). Returns nil (with an error + usage

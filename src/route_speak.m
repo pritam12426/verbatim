@@ -4,6 +4,30 @@
  * The most complex route: validates input, parses headers, computes
  * duration estimates, sets up NDJSON streaming, creates a speech
  * session, and streams/drains events.
+ *
+ * This file is the heart of verbatimd.  It ties together the HTTP
+ * layer (parsing, response writing), the speech layer (NSSpeechSynthesizer
+ * via SpeechBridge), and the event queue (VerbatimSession) into a
+ * single request handler.
+ *
+ * Request flow:
+ *   1. Validate: body must be non-empty text
+ *   2. Parse headers: TTS-Voice, TTS-Speed, ndjson
+ *   3. Compute: map speed to rate, estimate duration
+ *   4. If NDJSON:
+ *      a. Begin chunked HTTP response
+ *      b. Send "estimate" event (word count + estimated seconds)
+ *      c. Create VerbatimSession, start speech via SpeechBridge
+ *      d. Stream events from session to HTTP response (blocking pull)
+ *      e. End chunks when session signals completion
+ *   5. If non-NDJSON:
+ *      a. Create VerbatimSession, start speech
+ *      b. Drain all events (discard them)
+ *      c. Send a single JSON response with status + stats
+ *
+ * The NDJSON streaming path is the default and the reason this project
+ * exists: real-time, per-word timing events delivered as they happen,
+ * before the synthesizer has finished speaking.
  */
 
 #import "route_speak.h"
@@ -16,6 +40,17 @@
 
 @implementation Routes (Speak)
 
+// ── speakWithFD:request:config:clientIP: ─────────────────────────────────────
+// Handles POST / — speak text via NSSpeechSynthesizer.
+//
+// This is the most complex route in the project.  It validates the
+// request, parses headers, computes a duration estimate, optionally
+// sets up NDJSON streaming, creates a speech session, and streams
+// events back to the client.
+//
+// The NDJSON streaming path is the key feature: the client receives
+// real-time per-word timing events as the synthesizer speaks, allowing
+// it to highlight words, calculate progress, etc.
 + (void)speakWithFD:(int)fd
             request:(HttpRequest *)req
              config:(ServerConfig *)config
@@ -23,6 +58,8 @@
 {
 	LOG_TRACE(@"routes: POST / — validating request");
 
+	// ── Step 1: Validate the request body ────────────────────────────────
+	// The body must be non-empty, non-whitespace text to speak.
 	if (req.body == nil || req.body.length == 0 || [req.body isBlank]) {
 		LOG_WARN(@"%@ POST / — 400 empty body", clientIP);
 		[RouteHelpers sendJSONErrorWithFD:fd
@@ -32,6 +69,10 @@
 		return;
 	}
 
+	// ── Step 2: Parse custom headers ─────────────────────────────────────
+	// TTS-Voice: name of the voice to use (e.g. "Albert", "Samantha")
+	// TTS-Speed: friendly 1-10 scale (mapped to WPM below)
+	// ndjson:    "false" to disable streaming (default: true)
 	NSString *voiceHeader  = [req headerWithName:@"TTS-Voice"];
 	NSString *speedHeader  = [req headerWithName:@"TTS-Speed"];
 	NSString *ndjsonHeader = [req headerWithName:@"ndjson"];
@@ -41,6 +82,9 @@
 	          speedHeader ? speedHeader : @"(none)",
 	          ndjsonHeader ? ndjsonHeader : @"(none)");
 
+	// ── Step 3: Map speed to rate ────────────────────────────────────────
+	// TTS-Speed is a friendly 1-10 scale, mapped linearly to WPM.
+	// If no speed header, use the server's default rate.
 	float rate = config.defaultRate;
 	if (speedHeader) {
 		NSScanner *scanner = [NSScanner scannerWithString:speedHeader];
@@ -53,14 +97,21 @@
 		LOG_TRACE(@"routes: speed mapped to rate=%.0f wpm", (double) rate);
 	}
 
+	// ── Step 4: Check NDJSON preference ──────────────────────────────────
+	// NDJSON streaming is on by default.  Client can disable with
+	// "ndjson: false" header to get a single JSON response instead.
 	BOOL wantsNDJSON = YES;
 	if (ndjsonHeader && [ndjsonHeader caseInsensitiveCompare:@"false"] == NSOrderedSame) {
 		wantsNDJSON = NO;
 	}
 
+	// ── Step 5: Compute duration estimate ────────────────────────────────
+	// Word count is used for the "estimate" event and the non-NDJSON
+	// completion response.  Duration is a rough heuristic.
 	NSUInteger wordCount    = [req.body countWords];
 	double estimatedSeconds = [RouteHelpers estimateDurationForWordCount:wordCount rateWPM:rate];
 
+	// Log the request at INFO level
 	LOG_INFO(
 	    @"%@ POST / — speaking %lu chars (~%lu words, ~%.1fs), voice: %@, rate: %.0f wpm, ndjson: %@",
 	    clientIP,
@@ -71,10 +122,16 @@
 	    (double) rate,
 	    wantsNDJSON ? @"true" : @"false");
 
+	// ── Step 6: NDJSON streaming path ────────────────────────────────────
 	if (wantsNDJSON) {
 		LOG_TRACE(@"routes: starting chunked NDJSON response");
+
+		// Begin the chunked HTTP response
 		[HttpResponse beginChunkedWithFD:fd contentType:@"application/x-ndjson"];
 
+		// Send the "estimate" event before speech begins.
+		// This gives the client the word count and estimated duration
+		// so it can prepare (e.g. allocate a progress bar).
 		NSDictionary *estimateDict = @{
 			@"event": @"estimate",
 			@"word_count": @(wordCount),
@@ -89,11 +146,19 @@
 		}
 	}
 
+	// ── Step 7: Create session and start speech ──────────────────────────
+	// VerbatimSession is the bridge between the speech engine's delegate
+	// callbacks and the HTTP response.  It owns a thread-safe queue that
+	// the speech engine pushes events into and the HTTP thread pulls from.
 	LOG_TRACE(@"routes: creating session and starting speech");
 	VerbatimSession *session = [[VerbatimSession alloc] init];
 	[SpeechBridge speakWithSession:session text:req.body rate:rate voiceName:voiceHeader];
 
+	// ── Step 8: Stream or drain events ───────────────────────────────────
 	if (wantsNDJSON) {
+		// NDJSON streaming: pull events from the session and write them
+		// as chunks to the HTTP response.  This blocks until the speech
+		// engine signals completion (via the terminal event).
 		LOG_TRACE(@"routes: streaming NDJSON events");
 		NSString *line;
 		while ((line = [session nextEvent]) != nil) {
@@ -105,9 +170,11 @@
 		LOG_TRACE(@"routes: NDJSON stream complete");
 		[HttpResponse endChunksWithFD:fd];
 	} else {
+		// Non-NDJSON: drain all events (discard them) and send a single
+		// JSON response with the final status and statistics.
 		LOG_TRACE(@"routes: draining events (non-streaming mode)");
 		while ([session nextEvent] != nil) {
-			/* discard */
+			/* discard — caller only wants completion, not the events */
 		}
 		LOG_TRACE(@"routes: sending completion response");
 		NSDictionary *resultDict = @{
