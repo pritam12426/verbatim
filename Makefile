@@ -60,7 +60,7 @@ ifeq ($(strip $(O_LOG_SHOW_TIME_STAMP)),1)
 	MFLAGS += -DLOG_SHOW_TIME_STAMP
 endif
 
-OUT += $(SRC:%.c=$(BUILD)/%.o)
+OUT += $(SRC:%.m=$(BUILD)/%.o)
 
 all: $(BIN)
 
@@ -87,7 +87,7 @@ $(BUILD)/%.o: %.m
 $(BIN): $(SRC) $(OUT)  ## Build the linkrot binary
 	$(CC) $(LDFLAGS) -o $@ $(OUT) $(LDLIBS)
 
-debug: $(BIN)  ## Build the debug binary run `make debug -B O_DEBUG=1`
+debug: $(BIN)  ## Build the debug binary with `make -B O_DEBUG=1`
 
 install: all  ## Install the verbatimd binary
 	$(INSTALL) -m 0755 -d $(DESTDIR)$(PREFIX)/bin
