@@ -14,18 +14,17 @@ Single binary, no runtime dependencies. 100% Objective-C. Listens on
 
 ### System requirements
 
-| Tool          | Version                    | Check command   |
-| ------------- | -------------------------- | --------------- |
-| Macos version | macOS Tahoe 26             | sw_vers         |
-| clang version | Apple clang version 21.0.0 | clang --version |
+| Tool          | Version                    | Check command     |
+| ------------- | -------------------------- | ----------------- |
+| macOS version | macOS Tahoe 26             | `sw_vers`         |
+| clang version | Apple clang version 21.0.0 | `clang --version` |
 
 ## Build
 
 ```sh
-make help         # show available targets
+make help         # show available targets and build options
 make              # release build (-O3)
 make debug        # debug build (ASan, UBSan, -g3)
-make help         # show all targets and build options
 ```
 
 ## Run
@@ -66,21 +65,17 @@ Speak text. Body is raw UTF-8 text (not JSON).
 **ndjson=true (default):** Returns `application/x-ndjson` stream. Each line is a JSON event:
 
 ```json
-{"event":"estimate","word_count":42,"estimated_seconds":16.8}
-{"event":"started"}
 {"event":"word","start":0,"length":5}
 {"event":"word","start":6,"length":3}
 {"event":"finished","completed":true}
 ```
 
-The `estimate` event is sent immediately — before the synthesizer has spoken a
-single word — computed from `word_count / rate * 60`. It's a heuristic, not a
-guarantee, but it's effectively free to compute.
+Events arrive in real-time as the synthesizer speaks, allowing per-word highlighting.
 
 **ndjson=false:** Blocks until speech finishes, then returns:
 
 ```json
-{"status":"done","word_count":42,"estimated_seconds":16.8}
+{"status":"done"}
 ```
 
 ### `POST /stop`
@@ -145,10 +140,9 @@ Default `info` gives a clear access log of all activity.
 ## Format
 
 ```sh
+make format          # uses .clang-format (tabs, 100-col, pointer-right)
 clang-format -i src/*.m src/*.h
 ```
-
-Formatting is configured in `.clang-format` (tabs, 100-col limit, pointer-right alignment).
 
 ## Install / uninstall
 
@@ -160,24 +154,29 @@ make uninstall
 
 ## Architecture
 
-Ten source files, no subdirectories:
+Thirteen source files, no subdirectories:
 
 ```
 src/
-├── project_config.h    # version string, binary name, shared metadata
-├── command_line.h/.m   # argv parsing (this project's own — no argp)
-├── log.h/.m            # thread-safe leveled logging with ANSI colour
-├── json_writer.h/.m    # JSON serialization via NSJSONSerialization
-├── http_server.h/.m    # minimal hand-rolled HTTP/1.1 server (thread-per-connection)
-├── voices.h/.m         # GET /voices — shells out to `say -v '?'`, cached
-├── speech_bridge.h/.m  # NSSpeechSynthesizer wrapper + NDJSON event queue
-├── routes.h/.m         # the four HTTP endpoint handlers
-└── main.m              # entry point: parses args, starts server, runs CFRunLoop
+├── project_config.h       # version string, binary name, shared metadata
+├── command_line.h/.m      # argv parsing (this project's own — no argp)
+├── log.h/.m               # thread-safe leveled logging with ANSI colour
+├── json_writer.h/.m       # JSON serialization via NSJSONSerialization
+├── http_parse.h/.m        # HTTP request parsing (recv + parse)
+├── http_response.h/.m     # HTTP response writing (plain + chunked)
+├── http_server.h/.m       # minimal hand-rolled HTTP/1.1 server (thread-per-connection)
+├── voices.h/.m            # GET /voices — shells out to `say -v '?'`, cached
+├── route_helpers.h/.m     # shared route utilities (speed mapping, JSON helpers)
+├── route_speak.h/.m       # POST / handler (the complex one)
+├── speech_bridge.h/.m     # NSSpeechSynthesizer wrapper
+├── verbatim_event_queue.h/.m  # thread-safe event queue (NSCondition)
+├── routes.h/.m            # the remaining HTTP endpoint handlers
+└── main.m                 # entry point: parses args, starts server, runs CFRunLoop
 ```
 
-**Threading model:** The HTTP server runs on a background pthread (thread-per-connection). The main thread runs `CFRunLoopRun()` to keep the run loop alive — this is required for `NSSpeechSynthesizer` delegate callbacks (`willSpeakWord`) to fire. This division is load-bearing; do not merge the threads.
+**Threading model:** The HTTP server runs on a background thread (`[HttpServer runWithConfig:]` via `NSThread`). Each connection gets its own `NSThread` block. The main thread runs `CFRunLoopRun()` to keep the run loop alive — this is required for `NSSpeechSynthesizer` delegate callbacks (`willSpeakWord`) to fire. This division is load-bearing; do not merge the threads.
 
-**Speech engine:** A single global `NSSpeechSynthesizer` instance, guarded by `NSLock`. One utterance at a time — new requests supersede the current one, and the previous session receives a `finished` event with `completed:false`. The `sender !== synth` identity check in the delegate prevents stray callbacks from a superseded synthesizer from corrupting a newer request's stream.
+**Speech engine:** A single global `NSSpeechSynthesizer` instance, guarded by `NSLock`. One utterance at a time — new requests supersede the current one, and the previous session receives a `finished` event with `completed:false`. The `sender != g_synth` identity check in the delegate prevents stray callbacks from a superseded synthesizer from corrupting a newer request's stream.
 
 ## License
 
@@ -186,4 +185,4 @@ MIT — see [LICENSE](LICENSE).
 ## See Also
 
 - [PROJECT_BRIEF.md](PROJECT_BRIEF.md) — Architecture, module guide, mental model
-- [AGENTS.md](AGENTS.md) — Agent instructions for this repo
+- [DEV.md](DEV.md) — Developer guide

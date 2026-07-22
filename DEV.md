@@ -38,9 +38,10 @@ make                                    # release build -> ./verbatimd
 Other useful variants:
 
 ```sh
-make debug O_DEBUG=1     # ASan + UBSan, -g3, source-location + timestamp logging
-make clean                # remove build artifacts
-make install               # copies to $PREFIX/bin (default /usr/local/bin)
+make debug                              # ASan + UBSan, -g3, source-location + timestamp logging
+make clean                              # remove build artifacts
+make install                            # copies to $PREFIX/bin (default /usr/local/bin)
+make format                             # auto-format all source files
 ```
 
 Run it and poke it with curl:
@@ -58,12 +59,12 @@ curl -X POST localhost:5959/stop
 ```
 main thread                          background thread             per-connection threads
 ────────────                         ──────────────────             ───────────────────────
-command_line.m: parse argv           http_server_run():             handle_connection():
-log.m: [Logger init:]                socket/bind/listen/accept  ──▶  parse request
+command_line.m: parse argv           [HttpServer runWithConfig:]:   NSThread block per:
+log.m: [Logger init:]                socket/bind/listen/accept        parse request
 build ServerConfig                   loop forever, spawning           dispatch to routes.m
-pthread_create(server_thread) ──────▶ one detached pthread            (route_speak may talk
-                                       per connection                  to speech_bridge.m,
-CFRunLoopRun()  ◀── blocks forever,                                   which owns a single,
+[NSThread start] ──────────────────▶ one NSThread per connection     (route_speak may talk
+                                     (blocks, no pthread)             to speech_bridge.m,
+CFRunLoopRun()  ◀── blocks forever,                                  which owns a single,
    required so AppKit can                                             global NSSpeechSynthesizer)
    deliver NSSpeechSynthesizer
    delegate callbacks
@@ -81,42 +82,46 @@ see `PROJECT_BRIEF.md` §1 for that backstory.)
 
 Everything downstream of the accept loop is plain, boring, blocking I/O
 on its own thread — there's no async runtime, no reactor, no thread
-pool. One thread per HTTP connection, and exactly one global speech
-engine shared across all of them (starting a new utterance interrupts
-whatever was previously speaking, matching the single-utterance-at-a-time
-behavior of the original Swift version).
+pool. One thread per HTTP connection via NSThread blocks, and exactly one
+global speech engine shared across all of them (starting a new utterance
+interrupts whatever was previously speaking, matching the
+single-utterance-at-a-time behavior of the original Swift version).
 
 ## Source tree
 
-| File                 | Responsibility                                                               |
-| -------------------- | ---------------------------------------------------------------------------- |
-| `project_config.h`   | Version string, binary name, shared string constants                         |
-| `command_line.h/.m`  | `argv` → `CommandLineArguments` (this project's own parser, no `argp`)       |
-| `log.h/.m`           | Thread-safe leveled logger (`Logger` class + `LOG_*` macros)                 |
-| `json_writer.h/.m`   | JSON _serialization only_, via `NSJSONSerialization`                         |
-| `http_server.h/.m`   | Hand-rolled HTTP/1.1: socket accept loop, request parsing, chunked responses |
-| `voices.h/.m`        | `GET /voices` — shells out to `say -v '?'`, parses + caches                  |
-| `speech_bridge.h/.m` | Wraps `NSSpeechSynthesizer`; per-session NDJSON event queue                  |
-| `routes.h/.m`        | The four HTTP endpoints                                                      |
-| `main.m`             | Entry point: parse args, start server thread, block on the run loop          |
+| File                        | Responsibility                                                                   |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| `project_config.h`          | Version string, binary name, shared string constants                             |
+| `command_line.h/.m`         | `argv` → `CommandLineArguments` (this project's own parser, no `argp`)           |
+| `log.h/.m`                  | Thread-safe leveled logger (`Logger` class + `LOG_*` macros)                     |
+| `json_writer.h/.m`          | JSON _serialization only_, via `NSJSONSerialization` (`[JSONWriter serialize:]`) |
+| `http_parse.h/.m`           | HTTP request parsing: `recvUntilHeadersDone`, `parseHead` (class methods)        |
+| `http_response.h/.m`        | HTTP response writing: plain + chunked streaming (class methods)                 |
+| `http_server.h/.m`          | Minimal HTTP/1.1 server: socket accept loop, connection handling via NSThread    |
+| `voices.h/.m`               | `GET /voices` — shells out to `say -v '?'` via NSTask, parses + caches           |
+| `route_helpers.h/.m`        | Shared route utilities: speed mapping, JSON response/error helpers               |
+| `route_speak.h/.m`          | `POST /` handler — NDJSON streaming, the core of the project                     |
+| `speech_bridge.h/.m`        | Wraps `NSSpeechSynthesizer`; delegate callbacks, voice resolution                |
+| `verbatim_event_queue.h/.m` | Thread-safe event queue (`VerbatimSession` + `VerbatimEventQueue`)               |
+| `routes.h/.m`               | The remaining HTTP endpoints (stop, status, voices, 404)                         |
+| `main.m`                    | Entry point: parse args, start server thread, block on the run loop              |
 
 Flat `src/`, no subdirectories — same convention as the old project.
 
 ## How a request flows (short version)
 
-1. `http_server_run()` accepts a connection, spawns a detached pthread.
-2. That thread reads/parses the request (`http_server.m`), then dispatches
-   by method+path to a `route_*` function (`routes.m`).
+1. `[HttpServer runWithConfig:]` accepts a connection, spawns an NSThread block.
+2. That thread reads/parses the request (`http_parse.m`), then dispatches
+   by method+path to a `Routes` class method (`routes.m` / `route_speak.m`).
 3. `route_speak` (the only interesting one): validates the body, reads
-   `TTS-Voice`/`TTS-Speed`/`ndjson` headers, computes a word-count-based
-   duration estimate, creates a `VerbatimSession`, and calls
-   `verbatim_speak()`.
+   `TTS-Voice`/`TTS-Speed`/`ndjson` headers, creates a `VerbatimSession`,
+   and calls `[SpeechBridge speakWithSession:...]`.
 4. `speech_bridge.m` interrupts whatever was previously speaking,
    creates a new `NSSpeechSynthesizer`, and starts it. Its delegate
    pushes `word`/`finished` events onto the session's queue as AppKit
    calls back (on the main thread's run loop).
 5. Back in `route_speak`, the connection thread blocks on
-   `verbatim_next_event()` in a loop, writing each event out as an NDJSON
+   `[session nextEvent]` in a loop, writing each event out as an NDJSON
    chunk until the terminal event arrives.
 6. Connection closes (`Connection: close` always — no keep-alive).
 
@@ -126,8 +131,8 @@ Full detail, including every module's internals, is in
 ## Design philosophy
 
 - **CLI-only config.** No config file, no env vars.
-- **No hidden concurrency.** Thread-per-connection, no thread pool, no
-  async runtime — you can reason about every thread that exists.
+- **No hidden concurrency.** Thread-per-connection via NSThread blocks, no
+  thread pool, no async runtime — you can reason about every thread that exists.
 - **No JSON parsing.** The server only ever _emits_ JSON; every input
   either arrives as raw body text or an HTTP header.
 - **One utterance at a time**, globally — matches the original Swift
@@ -143,16 +148,17 @@ Full detail, including every module's internals, is in
 | Task                     | Files to touch                                                                                                                     |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Add a CLI flag           | `command_line.h/.m` (parsing + property), `main.m` (wire into `ServerConfig`)                                                      |
-| Add an HTTP endpoint     | `routes.h/.m` (new `route_*` function), `http_server.m` (dispatch in `handle_connection`)                                          |
+| Add an HTTP endpoint     | `routes.h/.m` (new class method), `http_server.m` (dispatch in NSThread block)                                                     |
 | Add a log level          | `log.h` (enum + macro), `log.m` (`defaultLogHandler:`/`colorLogHandler:`)                                                          |
-| Change JSON output shape | `routes.m` only — build a different `NSDictionary`/`NSArray` literal                                                               |
+| Change JSON output shape | `routes.m` or `route_speak.m` — build a different `NSDictionary`/`NSArray` literal                                                 |
 | Touch the speech engine  | `speech_bridge.m` — the one file you can't test outside macOS; build and manually verify with `curl` before trusting a change here |
+| Modify event queue       | `verbatim_event_queue.h/.m` — `VerbatimSession` + `VerbatimEventQueue`                                                             |
+| Change HTTP parsing      | `http_parse.h/.m` (recv + parse), `http_response.h/.m` (send + chunked)                                                            |
 
 Coding conventions already in place, worth matching: tabs for
-indentation, opening braces on the same line, `snake_case` for plain C
-functions (`http_get_header`, `verbatim_speak`), `camelCase` for
-Objective-C methods/properties, and a comment above every non-obvious
-function explaining _why_, not just what.
+indentation, opening braces on the same line, `snake_case` for constants
+and enums, Objective-C method naming for class/category methods, and a
+comment above every non-obvious function explaining _why_, not just what.
 
 ## Known limitations
 
