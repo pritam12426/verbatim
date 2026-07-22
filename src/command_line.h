@@ -51,6 +51,10 @@ NS_ASSUME_NONNULL_BEGIN
 // into a LogLevel value from log.h. Returns NO if the string is not recognised.
 - (BOOL)resolveLogLevel:(LogLevel *)outLevel;
 
+// Validates all parsed arguments. Returns YES if valid, NO if invalid
+// (error message stored in *error if non-NULL).
+- (BOOL)validateWithError:(NSString *_Nullable *_Nullable)error;
+
 // Prints usage information to stderr.
 + (void)printUsage:(const char *)progName;
 

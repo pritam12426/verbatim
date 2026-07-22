@@ -311,19 +311,15 @@ static void *handle_connection(void *arg)
 
 	/* Body: whatever's already past header_end in `raw` is the start of it;
 	 * read the rest if Content-Length says there's more. */
-	size_t      body_have               = total_len - header_end;
-	const char *content_length_hdr_cstr = NULL;
-	NSString   *content_length_hdr      = http_get_header(req, @"Content-Length");
+	size_t    body_have          = total_len - header_end;
+	size_t    content_length     = 0;
+	NSString *content_length_hdr = http_get_header(req, @"Content-Length");
 
 	if (content_length_hdr) {
-		static char cl_buf[32];
+		char cl_buf[32];
 		snprintf(cl_buf, sizeof(cl_buf), "%s", [content_length_hdr UTF8String]);
-		content_length_hdr_cstr = cl_buf;
+		content_length = (size_t) strtoul(cl_buf, NULL, 10);
 	}
-
-	size_t content_length = content_length_hdr_cstr
-	                            ? (size_t) strtoul(content_length_hdr_cstr, NULL, 10)
-	                            : 0;
 
 	if (content_length > 0) {
 		size_t         to_copy  = body_have < content_length ? body_have : content_length;

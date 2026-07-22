@@ -22,7 +22,7 @@
  */
 
 #include <CoreFoundation/CoreFoundation.h>
-#import  <Foundation/Foundation.h>
+#import <Foundation/Foundation.h>
 #include <pthread.h>
 
 #import "command_line.h"
@@ -77,7 +77,14 @@ int main(int argc, char *argv[])
 		config.port          = args.port;
 		config.defaultRate   = args.rate;
 
-		// 5. Run the HTTP server on its own thread; the main thread is
+		// 5. Validate all arguments before starting the server.
+		NSString *validationError = nil;
+		if (![args validateWithError:&validationError]) {
+			fprintf(stderr, "error: %s\n", [validationError UTF8String]);
+			return EXIT_FAILURE;
+		}
+
+		// 6. Run the HTTP server on its own thread; the main thread is
 		//    reserved for the run loop below.
 		pthread_t server_thread;
 		if (pthread_create(&server_thread, NULL, server_thread_fn, (__bridge void *) config) != 0) {

@@ -219,4 +219,46 @@
 	return YES;
 }
 
+// ── Argument validation ──────────────────────────────────────────────────
+
+- (BOOL)validateWithError:(NSString **)error
+{
+	// Validate host
+	if (self.host.length == 0) {
+		if (error)
+			*error = @"host cannot be empty";
+		return NO;
+	}
+
+	if (self.host.length > 253) {
+		if (error)
+			*error = @"host exceeds maximum length (253 characters)";
+		return NO;
+	}
+
+	// Validate port (1-65535)
+	if (self.port == 0) {
+		if (error)
+			*error = @"port must be between 1 and 65535";
+		return NO;
+	}
+
+	// Validate rate (1-1000 wpm, reasonable range for NSSpeechSynthesizer)
+	if (self.rate < 1.0f || self.rate > 1000.0f) {
+		if (error)
+			*error = @"rate must be between 1 and 1000 words per minute";
+		return NO;
+	}
+
+	// Validate log level is recognised
+	LogLevel level;
+	if (![self resolveLogLevel:&level]) {
+		if (error)
+			*error = [NSString stringWithFormat:@"invalid log-level '%@'", self.logLevel];
+		return NO;
+	}
+
+	return YES;
+}
+
 @end

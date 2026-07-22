@@ -162,7 +162,9 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 		if (est_text) {
 			char with_newline[1200];
 			int  written = snprintf(with_newline, sizeof(with_newline), "%s\n", est_text);
-			http_write_chunk(fd, with_newline, (size_t) written);
+			if (written > 0 && (size_t) written < sizeof(with_newline)) {
+				http_write_chunk(fd, with_newline, (size_t) written);
+			}
 			free(est_text);
 		}
 	}
@@ -176,7 +178,9 @@ static void send_json_error(int fd, int status_code, const char *status_text, co
 			const char *lineCstr = [line UTF8String];
 			char        with_newline[1026];
 			int         written = snprintf(with_newline, sizeof(with_newline), "%s\n", lineCstr);
-			http_write_chunk(fd, with_newline, (size_t) written);
+			if (written > 0 && (size_t) written < sizeof(with_newline)) {
+				http_write_chunk(fd, with_newline, (size_t) written);
+			}
 		}
 		http_end_chunks(fd);
 	} else {
