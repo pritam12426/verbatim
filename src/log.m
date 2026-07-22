@@ -11,15 +11,17 @@
 
 #import "log.h"
 
+#import <Foundation/Foundation.h>
+
 // ANSI colour codes
-#define COLOR_RESET        "\x1b[0m"
-#define COLOR_BOLD_RED     "\x1b[1;31m"
-#define COLOR_BOLD_GREEN   "\x1b[1;32m"
-#define COLOR_BOLD_YELLOW  "\x1b[1;33m"
-#define COLOR_BOLD_BLUE    "\x1b[1;34m"
-#define COLOR_BOLD_MAGENTA "\x1b[1;35m"
-#define COLOR_BOLD_CYAN    "\x1b[1;36m"
-#define COLOR_DIM          "\x1b[2m"
+static NSString *const kColorReset       = @"\x1b[0m";
+static NSString *const kColorBoldRed     = @"\x1b[1;31m";
+static NSString *const kColorBoldGreen   = @"\x1b[1;32m";
+static NSString *const kColorBoldYellow  = @"\x1b[1;33m";
+static NSString *const kColorBoldBlue    = @"\x1b[1;34m";
+static NSString *const kColorBoldMagenta = @"\x1b[1;35m";
+static NSString *const kColorBoldCyan    = @"\x1b[1;36m";
+static NSString *const kColorDim         = @"\x1b[2m";
 
 // ── Logger state ─────────────────────────────────────────────────────────────
 //
@@ -35,83 +37,63 @@ static BOOL     _initialized = NO;
 
 // ── Internal helpers (called with lock already held) ─────────────────────
 
-// Print the log-level label without colour
-+ (void)defaultLogHandler:(LogLevel)level
++ (NSString *)levelLabel:(LogLevel)level
 {
 	switch (level) {
 	case LogLevelFatal:
-		fprintf(stderr, "[FATAL] ");
-		break;
+		return @"FATAL";
 	case LogLevelError:
-		fprintf(stderr, "[ERROR] ");
-		break;
+		return @"ERROR";
 	case LogLevelWarn:
-		fprintf(stderr, "[WARN ] ");
-		break;
+		return @"WARN ";
 	case LogLevelInfo:
-		fprintf(stderr, "[INFO ] ");
-		break;
+		return @"INFO ";
 	case LogLevelDebug:
-		fprintf(stderr, "[DEBUG] ");
-		break;
+		return @"DEBUG";
 	case LogLevelTrace:
-		fprintf(stderr, "[TRACE] ");
-		break;
+		return @"TRACE";
 	default:
-		fprintf(stderr, "[UNKWN] ");
-		break;
+		return @"UNKWN";
 	}
 }
 
-// Print the log-level label with ANSI colour
-+ (void)colorLogHandler:(LogLevel)level
++ (NSString *)levelLabelColored:(LogLevel)level
 {
 	switch (level) {
 	case LogLevelFatal:
-		fprintf(stderr, "💀 [" COLOR_BOLD_BLUE "FATAL" COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@FATAL%@", kColorBoldBlue, kColorReset];
 	case LogLevelError:
-		fprintf(stderr, "🚨 [" COLOR_BOLD_RED "ERROR" COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@ERROR%@", kColorBoldRed, kColorReset];
 	case LogLevelWarn:
-		fprintf(stderr, "⚠️  [" COLOR_BOLD_YELLOW "WARN " COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@WARN %@", kColorBoldYellow, kColorReset];
 	case LogLevelInfo:
-		fprintf(stderr, "ℹ️  [" COLOR_BOLD_GREEN "INFO " COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@INFO %@", kColorBoldGreen, kColorReset];
 	case LogLevelDebug:
-		fprintf(stderr, "🛠️  [" COLOR_BOLD_CYAN "DEBUG" COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@DEBUG%@", kColorBoldCyan, kColorReset];
 	case LogLevelTrace:
-		fprintf(stderr, "🔬 [" COLOR_BOLD_MAGENTA "TRACE" COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@TRACE%@", kColorBoldMagenta, kColorReset];
 	default:
-		fprintf(stderr, "[" COLOR_BOLD_BLUE "UNKWN" COLOR_RESET "] ");
-		break;
+		return [NSString stringWithFormat:@"%@UNKWN%@", kColorBoldBlue, kColorReset];
 	}
 }
 
 #ifdef LOG_SHOW_TIME_STAMP
 
-// Print a microsecond-precision timestamp at the start of each log line
-+ (void)logTimeStampHandler:(BOOL)useColor
+// Returns a microsecond-precision timestamp string: "HH:MM:SS.uuuuuu"
++ (NSString *)logTimeStamp
 {
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME, &ts);
+	NSTimeInterval interval = [[NSDate date] timeIntervalSince1970];
+	long long      seconds  = (long long) interval;
+	int            us       = (int) ((interval - (double) seconds) * 1000000.0);
 
-	struct tm tmNow;
-	localtime_r(&ts.tv_sec, &tmNow);
+	NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+	formatter.dateFormat       = @"HH:mm:ss";
+	formatter.timeZone         = [NSTimeZone localTimeZone];
 
-	char timestamp[20];
-	strftime(timestamp, sizeof(timestamp), "%H:%M:%S", &tmNow);
+	NSDate   *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval) seconds];
+	NSString *time = [formatter stringFromDate:date];
 
-	int us = (int) (ts.tv_nsec / 1000);  // convert ns → microseconds
-
-	if (useColor)
-		fprintf(stderr, COLOR_DIM);
-	fprintf(stderr, "[%s.%06d] ", timestamp, us);
-	if (useColor)
-		fprintf(stderr, COLOR_RESET);
+	return [NSString stringWithFormat:@"%@.%06d", time, us];
 }
 
 #endif  // LOG_SHOW_TIME_STAMP
@@ -152,6 +134,18 @@ static BOOL     _initialized = NO;
 	}
 }
 
+// Logs strerror(errno) as a separate LOG_ERROR line.  Used by LOG_PERROR.
++ (void)logErrno
+{
+	int         savedErrno = errno;
+	const char *msg        = strerror(savedErrno);
+	NSString   *message    = [NSString stringWithFormat:@"[LOG] errno=%d: %s", savedErrno, msg];
+
+	NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
+	[stderrHandle writeData:[message dataUsingEncoding:NSUTF8StringEncoding]];
+	[stderrHandle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+}
+
 // Core logging function: formats and writes a log message.
 // Called by the LOG_* macros. Thread-safe via @synchronized.
 + (void)record:(LogLevel)level
@@ -162,11 +156,14 @@ static BOOL     _initialized = NO;
            fmt:(NSString *)fmt, ...
 {
 	if (!_initialized) {
-		fprintf(stderr,
-		        COLOR_BOLD_RED
-		        "[LOG] error: +[Logger init:] not called — dropping message" COLOR_RESET);
+		NSString     *msg    = [NSString stringWithFormat:@"%@[LOG] error: +[Logger init:] not "
+		                                                  @"called — dropping message%@",
+                                                   kColorBoldRed,
+                                                   kColorReset];
+		NSFileHandle *handle = [NSFileHandle fileHandleWithStandardError];
+		[handle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
 		if (newLine)
-			fputc('\n', stderr);
+			[handle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
 		return;
 	}
 
@@ -181,24 +178,27 @@ static BOOL     _initialized = NO;
 			return;
 		}
 
+		NSMutableString *line_ = [NSMutableString string];
+
 #ifdef LOG_SHOW_TIME_STAMP
-		[self logTimeStampHandler:_useColor];
+		if (_useColor)
+			[line_ appendString:kColorDim];
+		[line_ appendFormat:@"[%@] ", [self logTimeStamp]];
+		if (_useColor)
+			[line_ appendString:kColorReset];
 #endif  // LOG_SHOW_TIME_STAMP
 
 		if (_useColor)
-			[self colorLogHandler:level];
+			[line_ appendString:[self levelLabelColored:level]];
 		else
-			[self defaultLogHandler:level];
+			[line_ appendFormat:@"[%@] ", [self levelLabel:level]];
 
 #ifdef LOG_SHOW_SOURCE_LOCATION
 		if (file && func) {
-			fprintf(stderr,
-			        "%s[%s:%d:%s]%s ",
-			        _useColor ? COLOR_DIM : "",
-			        file,
-			        line,
-			        func,
-			        _useColor ? COLOR_RESET : "");
+			if (_useColor)
+				[line_ appendFormat:@"%@[%s:%d:%s]%@ ", kColorDim, file, line, func, kColorReset];
+			else
+				[line_ appendFormat:@"[%s:%d:%s] ", file, line, func];
 		}
 #endif  // LOG_SHOW_SOURCE_LOCATION
 
@@ -207,12 +207,13 @@ static BOOL     _initialized = NO;
 		NSString *message = [[NSString alloc] initWithFormat:fmt arguments:args];
 		va_end(args);
 
-		fprintf(stderr, "%s", [message UTF8String]);
+		[line_ appendString:message];
 
 		if (newLine)
-			fputc('\n', stderr);
+			[line_ appendString:@"\n"];
 
-		fflush(stderr);
+		NSFileHandle *handle = [NSFileHandle fileHandleWithStandardError];
+		[handle writeData:[line_ dataUsingEncoding:NSUTF8StringEncoding]];
 	}
 }
 

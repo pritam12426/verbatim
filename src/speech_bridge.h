@@ -1,35 +1,16 @@
-#ifndef _SPEECH_BRIDGE_H_
-#define _SPEECH_BRIDGE_H_
-
+/*
+ * speech_bridge.h — ObjC interface to NSSpeechSynthesizer
+ *
+ * All methods are class-level: the engine is a single global
+ * NSSpeechSynthesizer guarded by a lock, same as the Swift version's
+ * @MainActor serialisation.
+ */
 
 #import <Foundation/Foundation.h>
 
+#import "verbatim_event_queue.h"
+
 NS_ASSUME_NONNULL_BEGIN
-
-// ---------------------------------------------------------------------------
-// VerbatimSession — one per POST / request
-//
-// Owns a queue of pending NDJSON event lines pushed by the speech
-// engine's delegate callbacks and pulled (blocking) by the HTTP thread
-// via -nextEvent.
-// ---------------------------------------------------------------------------
-
-@interface VerbatimSession : NSObject
-- (instancetype)init;
-
-// Blocks until the next NDJSON event line is available, then returns it.
-// Returns nil once the stream has ended (after the terminal
-// finished/stopped/error event has already been delivered).
-- (nullable NSString *)nextEvent;
-@end
-
-// ---------------------------------------------------------------------------
-// SpeechBridge — C-level interface to NSSpeechSynthesizer
-//
-// All methods are class-level: the engine is a single global
-// NSSpeechSynthesizer guarded by a lock, same as the Swift version's
-// @MainActor serialisation.
-// ---------------------------------------------------------------------------
 
 @interface SpeechBridge : NSObject
 
@@ -50,6 +31,3 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 NS_ASSUME_NONNULL_END
-
-
-#endif  // _SPEECH_BRIDGE_H_

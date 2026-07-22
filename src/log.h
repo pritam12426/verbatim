@@ -1,7 +1,3 @@
-#ifndef _LOG_H_
-#define _LOG_H_
-
-
 /*
  * log.h — Thread-safe logging implementation for Objective-C
  *
@@ -53,11 +49,14 @@ typedef NS_ENUM(NSInteger, LogLevel) {
        newLine:(BOOL)newLine
            fmt:(NSString *)fmt, ... NS_FORMAT_FUNCTION(6, 7);
 
+// Logs strerror(errno) as a separate LOG_ERROR line.  Used by LOG_PERROR.
++ (void)logErrno;
+
 @end
 
-/* --------------------------------------------------
- * Public logging macros
- * -------------------------------------------------- */
+// --------------------------------------------------
+// Public logging macros
+// --------------------------------------------------
 
 // Check if messages at the given level would be emitted right now.
 #define LOG_LEVEL_IS_ENABLED(level) ([Logger getLevel] >= (level))
@@ -74,7 +73,7 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 	       newLine:NEW_LINE                  \
 	           fmt:__VA_ARGS__]
 
-// Log an error and append strerror(errno) (via perror)
+// Log an error and append strerror(errno)
 #define LOG_PERROR(...)              \
 	do {                             \
 		[Logger record:LogLevelError \
@@ -83,7 +82,7 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 		          func:__func__      \
 		       newLine:NO            \
 		           fmt:__VA_ARGS__]; \
-		perror(" ");                 \
+		[Logger logErrno];           \
 	} while (0)
 
 #define LOG_FATAL(...)           \
@@ -141,11 +140,11 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 #define LOG_CUSTOM(LOG_LEVEL, NEW_LINE, ...)                                              \
 	[Logger record:LOG_LEVEL file:NULL line:0 func:NULL newLine:NEW_LINE fmt:__VA_ARGS__]
 
-// Log an error and append strerror(errno) (via perror)
+// Log an error and append strerror(errno)
 #define LOG_PERROR(...)                                                                      \
 	do {                                                                                     \
 		[Logger record:LogLevelError file:NULL line:0 func:NULL newLine:NO fmt:__VA_ARGS__]; \
-		perror(" ");                                                                         \
+		[Logger logErrno];                                                                   \
 	} while (0)
 
 #define LOG_FATAL(...)                                                                   \
@@ -168,8 +167,4 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 
 #endif  // LOG_SHOW_SOURCE_LOCATION
 
-
 NS_ASSUME_NONNULL_END
-
-
-#endif  // _LOG_H_

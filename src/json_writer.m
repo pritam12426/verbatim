@@ -5,20 +5,17 @@
 
 #import "json_writer.h"
 
-#import <string.h>
-
 #import "log.h"
 
-char *json_serialize_alloc(id object, size_t *out_len)
-{
-	if (out_len)
-		*out_len = 0;
+@implementation JSONWriter
 
++ (NSData *)serialize:(id)object
+{
 	LOG_TRACE(@"json: validating object");
 	if (![NSJSONSerialization isValidJSONObject:object]) {
 		LOG_ERROR(@"json: object is not valid top-level JSON (must be "
 		          @"NSDictionary/NSArray of strings/numbers/booleans)");
-		return NULL;
+		return nil;
 	}
 
 	LOG_TRACE(@"json: serializing object");
@@ -27,25 +24,11 @@ char *json_serialize_alloc(id object, size_t *out_len)
 
 	if (!data) {
 		LOG_ERROR(@"json: serialization failed: %@", error.localizedDescription);
-		return NULL;
+		return nil;
 	}
 
-	size_t len = data.length;
-	LOG_TRACE(@"json: serialized %zu bytes", len);
-
-	char *buf = malloc(len + 1);
-
-	if (!buf) {
-		LOG_ERROR(@"json: malloc(%zu) failed", len + 1);
-		return NULL;
-	}
-
-	memcpy(buf, data.bytes, len);
-	buf[len] = '\0';
-
-	if (out_len)
-		*out_len = len;
-
-	LOG_TRACE(@"json: serialization complete (%zu bytes)", len);
-	return buf;
+	LOG_TRACE(@"json: serialized %lu bytes", (unsigned long) data.length);
+	return data;
 }
+
+@end

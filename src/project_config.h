@@ -1,21 +1,21 @@
-#ifndef _PROJECT_CONFIG_H_
-#define _PROJECT_CONFIG_H_
+/*
+ * project_config.h — compile-time constants for the project
+ */
 
+#import <Foundation/Foundation.h>
 
-#define VERBATIM    "verbatim"
-#define MAIN_BINARY "verbatimd"
+static NSString *const kVerbatim   = @"verbatim";
+static NSString *const kMainBinary = @"verbatimd";
 
-#define PROJECT_VERSION       "0.1.0"
-#define PROJECT_VERSION_MAJOR 0
-#define PROJECT_VERSION_MINOR 1
-#define PROJECT_VERSION_PATCH 0
+static NSString *const kProjectVersion      = @"0.1.0";
+static const int       kProjectVersionMajor = 0;
+static const int       kProjectVersionMinor = 1;
+static const int       kProjectVersionPatch = 0;
 
-#define PROJECT_HOMEPAGE_URL "https://github.com/pritam12426/" VERBATIM
+static NSString *const kProjectHomepageURL = @"https://github.com/pritam12426/verbatim";
 
-#define PROJECT_SHORT_DESC                                                              \
-	"local macOS TTS server over say command with real-time, per-word timing over HTTP"
+static NSString *const kProjectShortDesc
+    = @"local macOS TTS server over say command with real-time, per-word timing over HTTP";
 
-#define AUTH_MESSAGE "Author: Pritam <84720825+pritam12426@users.noreply.github.com>"
-
-
-#endif  // _PROJECT_CONFIG_H_
+static NSString *const kAuthMessage
+    = @"Author: Pritam <84720825+pritam12426@users.noreply.github.com>";

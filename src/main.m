@@ -21,33 +21,28 @@
  * instead of a C struct.
  */
 
-#include <CoreFoundation/CoreFoundation.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
-#include <pthread.h>
+#import <signal.h>
 
 #import "command_line.h"
 #import "http_server.h"
 #import "log.h"
 
-static void *server_thread_fn(void *arg)
-{
-	LOG_TRACE(@"main: server thread started");
-	ServerConfig *config = (__bridge ServerConfig *) arg;
-	http_server_run(config); /* never returns on success */
-	LOG_FATAL(@"http server thread exited unexpectedly");
-	exit(1);
-}
-
 int main(int argc, char *argv[])
 {
 	@autoreleasepool {
-		// 0. Initialise logger with default level so early LOG_* calls work.
+		// 0. Ignore SIGPIPE so a client disconnect during streaming
+		//    doesn't kill the entire server.
+		signal(SIGPIPE, SIG_IGN);
+
+		// 1. Initialise logger with default level so early LOG_* calls work.
 		//    Re-initialise with the user-specified level after argv parsing.
 		[Logger init:LogLevelInfo];
 
 		LOG_TRACE(@"main: starting verbatimd (argc=%d)", argc);
 
-		// 1. Parse argv into a CommandLineArguments object.
+		// 2. Parse argv into a CommandLineArguments object.
 		//    Returns nil on parse error OR -h/--help (usage is already
 		//    printed to stderr in both cases).
 		LOG_TRACE(@"main: parsing command line arguments");
@@ -58,20 +53,22 @@ int main(int argc, char *argv[])
 			return EXIT_FAILURE;
 		}
 
-		// 2. Convert the parsed --log-level string into a LogLevel enum
+		// 3. Convert the parsed --log-level string into a LogLevel enum
 		//    value understood by Logger.
 		LogLevel level;
 
 		if (![args resolveLogLevel:&level]) {
-			LOG_TRACE(@"main: invalid log-level '%s'", [args.logLevel UTF8String]);
-			fprintf(stderr,
-			        "error: invalid --log-level '%s' "
-			        "(expected off|fatal|error|warn|info|debug|trace)\n",
-			        [args.logLevel UTF8String]);
+			LOG_TRACE(@"main: invalid log-level '%@'", args.logLevel);
+			NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
+			NSString     *msg          = [NSString
+                stringWithFormat:@"error: invalid --log-level '%@' "
+			                                  @"(expected off|fatal|error|warn|info|debug|trace)\n",
+                                 args.logLevel];
+			[stderrHandle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
 			return EXIT_FAILURE;
 		}
 
-		// 3. Re-initialise logger with user-specified level.
+		// 4. Re-initialise logger with user-specified level.
 		LOG_TRACE(@"main: re-initializing logger at level=%ld", (long) level);
 		[Logger init:level];
 
@@ -81,7 +78,7 @@ int main(int argc, char *argv[])
 		         args.rate,
 		         args.logLevel);
 
-		// 4. Build the ServerConfig the HTTP layer needs.  Heap-allocated
+		// 5. Build the ServerConfig the HTTP layer needs.  Heap-allocated
 		//    so it outlives main() for as long as the server thread runs.
 		LOG_TRACE(@"main: creating ServerConfig");
 		ServerConfig *config = [[ServerConfig alloc] init];
@@ -89,25 +86,29 @@ int main(int argc, char *argv[])
 		config.port          = args.port;
 		config.defaultRate   = args.rate;
 
-		// 5. Validate all arguments before starting the server.
+		// 6. Validate all arguments before starting the server.
 		LOG_TRACE(@"main: validating arguments");
 		NSString *validationError = nil;
 		if (![args validateWithError:&validationError]) {
 			LOG_TRACE(@"main: validation failed — %@", validationError);
-			fprintf(stderr, "error: %s\n", [validationError UTF8String]);
+			NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
+			NSString     *msg = [NSString stringWithFormat:@"error: %@\n", validationError];
+			[stderrHandle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
 			return EXIT_FAILURE;
 		}
 
-		// 6. Run the HTTP server on its own thread; the main thread is
+		// 7. Run the HTTP server on its own thread; the main thread is
 		//    reserved for the run loop below.
 		LOG_TRACE(@"main: spawning server thread");
-		pthread_t server_thread;
-		if (pthread_create(&server_thread, NULL, server_thread_fn, (__bridge void *) config) != 0) {
-			LOG_FATAL(@"could not start HTTP server thread");
-			return EXIT_FAILURE;
-		}
-		pthread_detach(server_thread);
-		LOG_TRACE(@"main: server thread detached");
+		NSThread *serverThread = [[NSThread alloc] initWithBlock:^{
+			LOG_TRACE(@"main: server thread started");
+			[HttpServer runWithConfig:config]; /* never returns on success */
+			LOG_FATAL(@"http server thread exited unexpectedly");
+			exit(1);
+		}];
+		serverThread.name      = @"com.pritam.verbatim.http-server";
+		[serverThread start];
+		LOG_TRACE(@"main: server thread started");
 
 		LOG_DEBUG(
 		    @"entering CFRunLoopRun() — blocking main thread for NSSpeechSynthesizer callbacks");

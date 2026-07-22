@@ -1,7 +1,3 @@
-#ifndef _COMMAND_LINE_H_
-#define _COMMAND_LINE_H_
-
-
 /*
  * command_line.h — Native Objective-C command-line argument parsing
  *
@@ -27,12 +23,6 @@
 
 #import "log.h"
 
-// Program version string, printed by -V/--version.
-// Override at compile time with e.g. -DAPP_VERSION='"1.2.0"'
-#ifndef APP_VERSION
-#define APP_VERSION "0.1.0"
-#endif
-
 NS_ASSUME_NONNULL_BEGIN
 
 @interface CommandLineArguments : NSObject
@@ -46,7 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
 // message printed to stderr) if parsing fails. -h/--help and -V/--version
 // print their message and call exit() directly with status 0, so they
 // never return to the caller — only genuine parse errors return nil.
-+ (nullable instancetype)parseArgc:(int)argc argv:(char *const _Nonnull *)argv;
++ (nullable instancetype)parseArgc:(int)argc argv:(char *_Nonnull const *_Nonnull)argv;
 
 // Converts the parsed logLevel string ("off|fatal|error|warn|info|debug|trace")
 // into a LogLevel value from log.h. Returns NO if the string is not recognised.
@@ -57,14 +47,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)validateWithError:(NSString *_Nullable *_Nullable)error;
 
 // Prints usage information to stderr.
-+ (void)printUsage:(const char *)progName;
++ (void)printUsage:(NSString *)progName;
 
 // Prints "<progName> version <APP_VERSION>" to stdout.
-+ (void)printVersion:(const char *)progName;
++ (void)printVersion:(NSString *)progName;
 
 @end
 
 NS_ASSUME_NONNULL_END
-
-
-#endif  // _COMMAND_LINE_H_
