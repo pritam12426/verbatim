@@ -1,3 +1,8 @@
+#ifndef _JSON_WRITER_H_
+#define _JSON_WRITER_H_
+
+
+
 /*
  * json_writer.h — the only "JSON library" this project needs.
  *
@@ -34,3 +39,6 @@ NS_ASSUME_NONNULL_BEGIN
 char *_Nullable json_serialize_alloc(id object, size_t *out_len);
 
 NS_ASSUME_NONNULL_END
+
+
+#endif  // _JSON_WRITER_H_

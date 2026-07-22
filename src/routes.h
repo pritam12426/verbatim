@@ -1,5 +1,6 @@
-#ifndef _VERBATIM_ROUTES_H_
-#define _VERBATIM_ROUTES_H_
+#ifndef _ROUTES_H_
+#define _ROUTES_H_
+
 
 #import "http_server.h"
 
@@ -24,4 +25,5 @@ NS_ASSUME_NONNULL_BEGIN
 
 NS_ASSUME_NONNULL_END
 
-#endif  // _VERBATIM_ROUTES_H_
+
+#endif  // _ROUTES_H_

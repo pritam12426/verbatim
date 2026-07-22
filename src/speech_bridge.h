@@ -1,5 +1,5 @@
-#ifndef _VERBATIM_SPEECH_BRIDGE_H_
-#define _VERBATIM_SPEECH_BRIDGE_H_
+#ifndef _SPEECH_BRIDGE_H_
+#define _SPEECH_BRIDGE_H_
 
 
 #import <Foundation/Foundation.h>
@@ -52,4 +52,4 @@ NS_ASSUME_NONNULL_BEGIN
 NS_ASSUME_NONNULL_END
 
 
-#endif  // _VERBATIM_SPEECH_BRIDGE_H_
+#endif  // _SPEECH_BRIDGE_H_

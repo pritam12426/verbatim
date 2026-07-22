@@ -96,10 +96,13 @@ install: all  ## Install the verbatimd binary
 clean:  ## Clean up verbatimd artifacts
 	$(RM) -f $(OUT) $(BIN)
 
+format:  ## Format (src/*.h src/.m) files of the code base
+	/Library/Developer/CommandLineTools/usr/bin/clang-format -i src/*.h src/.m
+
 uninstall:  ## Uninstall the verbatimd binary
 	$(RM) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 
 strip: $(BIN)  ## Strip the verbatimd binary
 	$(STRIP) $^
 
-.PHONY: all install uninstall strip clean debug
+.PHONY: all install uninstall strip clean debug format

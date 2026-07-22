@@ -1,5 +1,6 @@
-#ifndef VERBATIM_COMMAND_LINE_H
-#define VERBATIM_COMMAND_LINE_H
+#ifndef _COMMAND_LINE_H_
+#define _COMMAND_LINE_H_
+
 
 /*
  * command_line.h — Native Objective-C command-line argument parsing
@@ -65,4 +66,5 @@ NS_ASSUME_NONNULL_BEGIN
 
 NS_ASSUME_NONNULL_END
 
-#endif /* VERBATIM_COMMAND_LINE_H */
+
+#endif  // _COMMAND_LINE_H_

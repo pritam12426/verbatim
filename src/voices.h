@@ -1,5 +1,5 @@
-#ifndef _VERBATIM_VOICES_H_
-#define _VERBATIM_VOICES_H_
+#ifndef _VOICES_H_
+#define _VOICES_H_
 
 
 #import <Foundation/Foundation.h>
@@ -27,4 +27,4 @@ NSArray<VoiceInfo *> *voicesList(void);
 NS_ASSUME_NONNULL_END
 
 
-#endif  // _VERBATIM_VOICES_H_
+#endif  // _VOICES_H_

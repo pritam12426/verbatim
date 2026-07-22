@@ -1,5 +1,5 @@
-#ifndef _VERBATIM_LOG_H_
-#define _VERBATIM_LOG_H_
+#ifndef _LOG_H_
+#define _LOG_H_
 
 
 /*
@@ -172,4 +172,4 @@ typedef NS_ENUM(NSInteger, LogLevel) {
 NS_ASSUME_NONNULL_END
 
 
-#endif  // _VERBATIM_LOG_H_
+#endif  // _LOG_H_

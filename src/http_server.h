@@ -1,5 +1,5 @@
-#ifndef _VERBATIM_HTTP_SERVER_H_
-#define _VERBATIM_HTTP_SERVER_H_
+#ifndef _HTTP_SERVER_H_
+#define _HTTP_SERVER_H_
 
 
 #import <Foundation/Foundation.h>
@@ -60,4 +60,4 @@ int http_server_run(ServerConfig *config);
 NS_ASSUME_NONNULL_END
 
 
-#endif  // VERBATIM_HTTP_SERVER_H
+#endif  // HTTP_SERVER_H

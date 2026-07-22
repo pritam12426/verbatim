@@ -17,3 +17,7 @@
 
 - https://developer.apple.com/documentation/applicationservices/speech_synthesis_manager
 - https://developer.apple.com/documentation/appkit/nsspeechsynthesizer
+
+### Community query
+
+- https://apple.stackexchange.com/questions/37418/how-can-i-open-port-80-so-a-non-root-process-can-bind-to-it

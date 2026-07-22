@@ -39,13 +39,27 @@ static BOOL     _initialized = NO;
 + (void)defaultLogHandler:(LogLevel)level
 {
 	switch (level) {
-		case LogLevelFatal: fprintf(stderr, "[FATAL] "); break;
-		case LogLevelError: fprintf(stderr, "[ERROR] "); break;
-		case LogLevelWarn:  fprintf(stderr, "[WARN ] ");  break;
-		case LogLevelInfo:  fprintf(stderr, "[INFO ] ");  break;
-		case LogLevelDebug: fprintf(stderr, "[DEBUG] "); break;
-		case LogLevelTrace: fprintf(stderr, "[TRACE] "); break;
-		default:            fprintf(stderr, "[UNKWN] "); break;
+	case LogLevelFatal:
+		fprintf(stderr, "[FATAL] ");
+		break;
+	case LogLevelError:
+		fprintf(stderr, "[ERROR] ");
+		break;
+	case LogLevelWarn:
+		fprintf(stderr, "[WARN ] ");
+		break;
+	case LogLevelInfo:
+		fprintf(stderr, "[INFO ] ");
+		break;
+	case LogLevelDebug:
+		fprintf(stderr, "[DEBUG] ");
+		break;
+	case LogLevelTrace:
+		fprintf(stderr, "[TRACE] ");
+		break;
+	default:
+		fprintf(stderr, "[UNKWN] ");
+		break;
 	}
 }
 
@@ -53,27 +67,27 @@ static BOOL     _initialized = NO;
 + (void)colorLogHandler:(LogLevel)level
 {
 	switch (level) {
-		case LogLevelFatal:
-			fprintf(stderr, "💀 [" COLOR_BOLD_BLUE "FATAL" COLOR_RESET "] ");
-			break;
-		case LogLevelError:
-			fprintf(stderr, "🚨 [" COLOR_BOLD_RED "ERROR" COLOR_RESET "] ");
-			break;
-		case LogLevelWarn:
-			fprintf(stderr, "⚠️  [" COLOR_BOLD_YELLOW "WARN " COLOR_RESET "] ");
-			break;
-		case LogLevelInfo:
-			fprintf(stderr, "ℹ️  [" COLOR_BOLD_GREEN "INFO " COLOR_RESET "] ");
-			break;
-		case LogLevelDebug:
-			fprintf(stderr, "🛠️  [" COLOR_BOLD_CYAN "DEBUG" COLOR_RESET "] ");
-			break;
-		case LogLevelTrace:
-			fprintf(stderr, "🔬 [" COLOR_BOLD_MAGENTA "TRACE" COLOR_RESET "] ");
-			break;
-		default:
-			fprintf(stderr, "[" COLOR_BOLD_BLUE "UNKWN" COLOR_RESET "] ");
-			break;
+	case LogLevelFatal:
+		fprintf(stderr, "💀 [" COLOR_BOLD_BLUE "FATAL" COLOR_RESET "] ");
+		break;
+	case LogLevelError:
+		fprintf(stderr, "🚨 [" COLOR_BOLD_RED "ERROR" COLOR_RESET "] ");
+		break;
+	case LogLevelWarn:
+		fprintf(stderr, "⚠️  [" COLOR_BOLD_YELLOW "WARN " COLOR_RESET "] ");
+		break;
+	case LogLevelInfo:
+		fprintf(stderr, "ℹ️  [" COLOR_BOLD_GREEN "INFO " COLOR_RESET "] ");
+		break;
+	case LogLevelDebug:
+		fprintf(stderr, "🛠️  [" COLOR_BOLD_CYAN "DEBUG" COLOR_RESET "] ");
+		break;
+	case LogLevelTrace:
+		fprintf(stderr, "🔬 [" COLOR_BOLD_MAGENTA "TRACE" COLOR_RESET "] ");
+		break;
+	default:
+		fprintf(stderr, "[" COLOR_BOLD_BLUE "UNKWN" COLOR_RESET "] ");
+		break;
 	}
 }
 

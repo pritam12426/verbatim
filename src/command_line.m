@@ -236,10 +236,10 @@
 		return NO;
 	}
 
-	// Validate port (1-65535)
-	if (self.port == 0) {
+	// Validate port (1024-65535)
+	if (self.port < 1024) {
 		if (error)
-			*error = @"port must be between 1 and 65535";
+			*error = @"port must be between 1024 and 65535";
 		return NO;
 	}
 
