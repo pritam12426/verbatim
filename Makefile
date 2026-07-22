@@ -22,7 +22,7 @@ MFLAGS +=  -Wshadow -Wconversion \
 
 # Common flags
 MFLAGS += -Isrc -fobjc-arc -Wall -Wextra
-LDLIBS += -lpthread -framework Foundation
+LDLIBS += -lpthread -framework Foundation -framework AppKit
 
 # Build options (set via command line, e.g. `make O_DEBUG=1`)
 O_DEBUG := 0                     ## Enable debug build (ASan, UBSan, -g3)
@@ -87,7 +87,7 @@ $(BUILD)/%.o: %.m
 $(BIN): $(SRC) $(OUT)  ## Build the linkrot binary
 	$(CC) $(LDFLAGS) -o $@ $(OUT) $(LDLIBS)
 
-debug: $(BIN)  ## Build the debug binary with `make -B O_DEBUG=1`
+debug: $(BIN)  ## Build the debug binary run `make debug -B O_DEBUG=1`
 
 install: all  ## Install the verbatimd binary
 	$(INSTALL) -m 0755 -d $(DESTDIR)$(PREFIX)/bin

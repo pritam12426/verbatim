@@ -88,7 +88,7 @@
 	int next = *idx + 1;
 
 	if (next >= argc) {
-		fprintf(stderr, "error: option '%s' requires a value\n\n", [optDisplayName UTF8String]);
+		fprintf(stderr, "error: option '%s' requires a value\n", [optDisplayName UTF8String]);
 		return nil;
 	}
 
@@ -194,11 +194,11 @@
 	static dispatch_once_t                       onceToken;
 	dispatch_once(&onceToken, ^{
 		map = @{
-			@"off":   @(LogLevelOff),
+			@"off": @(LogLevelOff),
 			@"fatal": @(LogLevelFatal),
 			@"error": @(LogLevelError),
-			@"warn":  @(LogLevelWarn),
-			@"info":  @(LogLevelInfo),
+			@"warn": @(LogLevelWarn),
+			@"info": @(LogLevelInfo),
 			@"debug": @(LogLevelDebug),
 			@"trace": @(LogLevelTrace),
 		};
