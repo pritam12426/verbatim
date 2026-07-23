@@ -1,0 +1,101 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in verbatimd
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what the bug is.
+      placeholder: Describe the bug...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Start verbatimd with '...'
+        2. Send request to '...'
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: verbatimd Version
+      description: "Output of `./verbatimd --version`"
+      placeholder: "e.g. 1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS Version
+      description: "Output of `sw_vers`"
+      placeholder: "e.g. macOS 14.5 Sonoma"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon (arm64)
+        - Intel (x86_64)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Log Output
+      description: "If applicable, paste verbatimd log output. Run with `--log-level trace` for verbose output."
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: request
+    attributes:
+      label: HTTP Request (if applicable)
+      description: "If this is an HTTP-related bug, paste the curl command or request details."
+      placeholder: |
+        curl -X POST http://127.0.0.1:5959/ -d "Hello world" -H "TTS-Voice: Albert"
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other context about the problem.
+    validations:
+      required: false

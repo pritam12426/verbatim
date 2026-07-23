@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/pritam12426/verbatim/blob/main/README.md
+    about: Check the README for usage instructions and API docs
+  - name: Development Guide
+    url: https://github.com/pritam12426/verbatim/blob/main/DEV.md
+    about: Read the development guide before contributing

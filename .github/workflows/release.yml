@@ -1,0 +1,23 @@
+name: Release Build
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: make
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: verbatimd
+          asset_name: verbatimd-macos-arm64

@@ -1,0 +1,79 @@
+name: Voice / TTS Issue
+description: Report an issue with a specific voice or TTS behavior
+labels: ["voice", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for issues related to specific voices,
+        speech quality, or TTS behavior.
+
+  - type: input
+    id: voice
+    attributes:
+      label: Voice Name
+      description: "The voice you're using (e.g. Albert, Samantha, Fred)"
+      placeholder: "e.g. Albert"
+    validations:
+      required: true
+
+  - type: textarea
+    id: text
+    attributes:
+      label: Text Being Spoken
+      description: The text you're sending to verbatimd.
+      placeholder: "Hello, this is a test."
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Issue Description
+      description: What's wrong with the voice or speech output?
+    validations:
+      required: true
+
+  - type: input
+    id: speed
+    attributes:
+      label: TTS-Speed Header
+      description: "The speed value you're sending (if any)"
+      placeholder: "e.g. 5"
+    validations:
+      required: false
+
+  - type: input
+    id: rate
+    attributes:
+      label: --rate Flag
+      description: "The default rate flag used at startup (if any)"
+      placeholder: "e.g. 175"
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Speech Behavior
+      description: What did you expect the voice to sound like or do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log Output
+      description: "Run with `--log-level trace` and paste relevant output."
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: other_voices
+    attributes:
+      label: Other Voices Tested
+      description: "If you tried other voices, do they work correctly?"
+      placeholder: "e.g. Samantha works fine, Albert has the issue"
+    validations:
+      required: false
