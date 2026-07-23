@@ -290,7 +290,7 @@ static BOOL     _initialized = NO;            // guards against use before +init
 		NSString *message = [[NSString alloc] initWithFormat:fmt arguments:args];
 		va_end(args);
 
-		[line_ appendString:message];
+		[line_ appendFormat:@"[%@]", message];
 
 		// Optionally append a newline
 		if (newLine)
