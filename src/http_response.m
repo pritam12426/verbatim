@@ -67,6 +67,27 @@
 
 @implementation HttpResponse
 
+// ── sendAll:data: ────────────────────────────────────────────────────────────
+// Sends all bytes on fd, handling short writes (partial send).
+// Returns YES if all bytes were sent, NO on error or disconnect.
++ (BOOL)sendAll:(int)fd data:(NSData *)data
+{
+	const char *bytes = (const char *) data.bytes;
+	NSUInteger  total = data.length;
+	NSUInteger  sent  = 0;
+
+	while (sent < total) {
+		ssize_t n = send(fd, bytes + sent, total - sent, 0);
+		if (n <= 0) {
+			if (n < 0 && errno == EINTR)
+				continue;  // Interrupted by signal, retry
+			return NO;     // Error or disconnect
+		}
+		sent += (NSUInteger) n;
+	}
+	return YES;
+}
+
 // ── sendWithFD:statusCode:statusText:contentType:body: ───────────────────────
 // Writes a complete HTTP response with Content-Length.
 //
@@ -101,25 +122,22 @@
 
 	NSData *headerData = [headerStr dataUsingEncoding:NSUTF8StringEncoding];
 
-	// Send headers first
-	if (send(fd, headerData.bytes, headerData.length, 0) < 0) {
-		LOG_WARN(@"http: send(header) failed: %s", strerror(errno));
+	// Send headers
+	if (![self sendAll:fd data:headerData]) {
+		LOG_WARN(@"http: send(header) failed");
 		return;
 	}
 
 	// Send body (if any)
-	if (bodyLen > 0 && send(fd, body.bytes, body.length, 0) < 0) {
-		LOG_WARN(@"http: send(body) failed: %s", strerror(errno));
+	if (bodyLen > 0 && ![self sendAll:fd data:body]) {
+		LOG_WARN(@"http: send(body) failed");
 	}
 }
 
 // ── beginChunkedWithFD:contentType: ──────────────────────────────────────────
 // Sends the HTTP response headers for a chunked transfer.
-//
-// After this call, the client expects a series of hex-size-prefixed
-// chunks terminated by "0\r\n\r\n".  Use writeChunkWithFD:data:
-// to send individual chunks, and endChunksWithFD: to finish.
-+ (void)beginChunkedWithFD:(int)fd contentType:(NSString *)contentType
+// Returns YES on success, NO on failure (caller should abort the stream).
++ (BOOL)beginChunkedWithFD:(int)fd contentType:(NSString *)contentType
 {
 	LOG_TRACE(@"http: starting chunked response (content-type: %@)", contentType);
 
@@ -133,9 +151,11 @@
 
 	NSData *headerData = [headerStr dataUsingEncoding:NSUTF8StringEncoding];
 
-	if (send(fd, headerData.bytes, headerData.length, 0) < 0) {
-		LOG_WARN(@"http: send(chunked header) failed: %s", strerror(errno));
+	if (![self sendAll:fd data:headerData]) {
+		LOG_WARN(@"http: send(chunked header) failed");
+		return NO;
 	}
+	return YES;
 }
 
 // ── writeChunkWithFD:data: ───────────────────────────────────────────────────
@@ -161,17 +181,16 @@
 	NSData   *sizeData = [sizeLine dataUsingEncoding:NSUTF8StringEncoding];
 
 	// Send size line
-	if (send(fd, sizeData.bytes, sizeData.length, 0) < 0)
+	if (![self sendAll:fd data:sizeData])
 		return;
 
 	// Send data
-	if (send(fd, data.bytes, data.length, 0) < 0)
+	if (![self sendAll:fd data:data])
 		return;
 
 	// Send trailing \r\n after data
 	NSData *crlf = [@"\r\n" dataUsingEncoding:NSUTF8StringEncoding];
-	if (send(fd, crlf.bytes, crlf.length, 0) < 0)
-		return;
+	[self sendAll:fd data:crlf];
 }
 
 // ── endChunksWithFD: ─────────────────────────────────────────────────────────
@@ -184,7 +203,7 @@
 {
 	LOG_TRACE(@"http: ending chunked response");
 	NSData *terminator = [@"0\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
-	send(fd, terminator.bytes, terminator.length, 0);
+	[self sendAll:fd data:terminator];
 }
 
 @end

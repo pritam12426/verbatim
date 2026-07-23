@@ -101,12 +101,21 @@ static const NSUInteger kVoicesCapacityInitial = 32;
 	}
 	LOG_TRACE(@"voices: NSTask launched successfully");
 
-	// Wait for the task to finish
+	// Read all stdout output BEFORE waitUntilExit to prevent deadlock.
+	// If `say` writes more than the pipe buffer (~64 KB) to stdout and
+	// nobody reads, it blocks on write.  waitUntilExit then blocks
+	// forever because the child is stuck → deadlock.
+	NSData *outputData = [[task.standardOutput fileHandleForReading] readDataToEndOfFile];
+
+	// Drain stderr to prevent the child from blocking on stderr writes.
+	// We don't use the stderr data, but not draining it can cause the
+	// same pipe-buffer deadlock if `say` writes warnings/errors.
+	[[task.standardError fileHandleForReading] readDataToEndOfFile];
+
+	// Now safe to wait — all pipe output has been consumed
 	[task waitUntilExit];
 
-	// Read all stdout output
-	NSData *outputData = [[task.standardOutput fileHandleForReading] readDataToEndOfFile];
-	int     status     = task.terminationStatus;
+	int status = task.terminationStatus;
 	LOG_DEBUG(@"voices: process exited status=%d, %lu bytes stdout",
 	          status,
 	          (unsigned long) outputData.length);

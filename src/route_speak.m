@@ -114,8 +114,12 @@
 	if (wantsNDJSON) {
 		LOG_TRACE(@"routes: starting chunked NDJSON response");
 
-		// Begin the chunked HTTP response
-		[HttpResponse beginChunkedWithFD:fd contentType:@"application/x-ndjson"];
+		// Begin the chunked HTTP response.  If this fails (client
+		// disconnected), abort the stream.
+		if (![HttpResponse beginChunkedWithFD:fd contentType:@"application/x-ndjson"]) {
+			LOG_WARN(@"%@ POST / — client disconnected before chunked headers sent", clientIP);
+			return;
+		}
 
 	}
 
@@ -132,13 +136,30 @@
 		// NDJSON streaming: pull events from the session and write them
 		// as chunks to the HTTP response.  This blocks until the speech
 		// engine signals completion (via the terminal event).
-		LOG_TRACE(@"routes: streaming NDJSON events");
+		//
+		// M7: Use an overall stream deadline based on estimated speaking
+		// time (chars/5 words * 60/rate seconds) plus a generous margin
+		// to prevent indefinite hangs if the speech engine stalls.
+		unsigned long estimatedWords = (unsigned long) req.body.length / 5 + 1;
+		NSTimeInterval estimatedSecs = (NSTimeInterval) estimatedWords * 60.0 / (double) rate;
+		NSTimeInterval streamTimeout = estimatedSecs * 3.0 + 30.0;  // 3x estimate + 30s grace
+		if (streamTimeout < 60.0)
+			streamTimeout = 60.0;  // Minimum 60s for short text
+		NSDate *streamDeadline = [NSDate dateWithTimeIntervalSinceNow:streamTimeout];
+
+		LOG_TRACE(@"routes: streaming NDJSON events (timeout=%.0fs)", streamTimeout);
 		NSString *line;
 		while ((line = [session nextEvent]) != nil) {
 			NSData *lineData = [[line stringByAppendingString:@"\n"]
 			    dataUsingEncoding:NSUTF8StringEncoding];
 			LOG_TRACE(@"routes: writing chunk (%lu bytes)", (unsigned long) lineData.length);
 			[HttpResponse writeChunkWithFD:fd data:lineData];
+
+			// Check overall stream deadline
+			if ([[NSDate date] compare:streamDeadline] == NSOrderedDescending) {
+				LOG_WARN(@"routes: NDJSON stream timed out after %.0fs", streamTimeout);
+				break;
+			}
 		}
 		LOG_TRACE(@"routes: NDJSON stream complete");
 		[HttpResponse endChunksWithFD:fd];

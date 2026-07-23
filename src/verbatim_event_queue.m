@@ -108,8 +108,10 @@
 	NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
 	while (_queue.lines.count == 0 && !_queue.done) {
 		if (![_queue.condition waitUntilDate:deadline]) {
-			// Timed out — return nil to prevent indefinite blocking
+			// Timed out — mark done so subsequent calls don't re-enter
+			// the wait loop, and return nil to prevent indefinite blocking.
 			LOG_WARN(@"speech: nextEvent — timed out after 30s");
+			_queue.done = YES;
 			[_queue.condition unlock];
 			return nil;
 		}

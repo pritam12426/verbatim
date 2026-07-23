@@ -104,13 +104,14 @@ static VerbatimSession                *g_current_session = nil;
 	                                            (long) characterRange.location,
 	                                            (long) characterRange.length];
 
-	// Capture the session while still holding the lock, then release
-	// before pushing the event (to avoid holding the lock during I/O)
+	// Push the event while still holding g_engine_lock to prevent a
+	// concurrent stop() from injecting a terminal event before this
+	// word event.  pushEvent:terminal: acquires the queue's NSCondition
+	// (lock ordering: g_engine_lock → _queue.condition — consistent
+	// everywhere, no deadlock).
 	VerbatimSession *session = g_current_session;
-	[g_engine_lock unlock];
-
-	// Push the event into the session's queue (thread-safe via NSCondition)
 	[session pushEvent:json terminal:NO];
+	[g_engine_lock unlock];
 }
 
 // ── didFinishSpeaking: ───────────────────────────────────────────────────────
@@ -140,16 +141,17 @@ static VerbatimSession                *g_current_session = nil;
 	NSString *json = [NSString stringWithFormat:@"{\"event\":\"finished\",\"completed\":%@}",
 	                                            finishedSpeaking ? @"true" : @"false"];
 
-	// Capture the session, then clear global state
+	// Capture the session and push the terminal event while still holding
+	// the lock, before clearing global state.  This ensures a concurrent
+	// stop() cannot inject a duplicate terminal event.
 	VerbatimSession *session = g_current_session;
+	[session pushEvent:json terminal:YES];
 
+	// Clear global state
 	g_synth           = nil;
 	g_delegate        = nil;
 	g_current_session = nil;
 	[g_engine_lock unlock];
-
-	// Push the terminal event (signals end of stream)
-	[session pushEvent:json terminal:YES];
 }
 
 @end
@@ -282,6 +284,10 @@ static VerbatimSession                *g_current_session = nil;
 	g_delegate        = delegate;
 	g_current_session = session;
 
+	// Push "started" while holding the lock to ensure it arrives before
+	// any terminal event from a concurrent stop().
+	[session pushEvent:@"{\"event\":\"started\"}" terminal:NO];
+
 	// ── Release lock ─────────────────────────────────────────────────────
 	[g_engine_lock unlock];
 	LOG_TRACE(@"speech: speak — unlocked engine");
@@ -299,8 +305,6 @@ static VerbatimSession                *g_current_session = nil;
 	}
 
 	// ── Start speaking ───────────────────────────────────────────────────
-	// Notify the session that speech has started
-	[session pushEvent:@"{\"event\":\"started\"}" terminal:NO];
 
 	// Actually start speaking.  This returns NO if the synthesizer
 	// couldn't start (e.g. invalid voice, empty text).
@@ -351,13 +355,15 @@ static VerbatimSession                *g_current_session = nil;
 	g_synth           = nil;
 	g_delegate        = nil;
 	g_current_session = nil;
+
+	// Push the terminal event while holding the lock to ensure ordering
+	// with any in-flight delegate callbacks.
+	[session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
+
 	[g_engine_lock unlock];
 	LOG_TRACE(@"speech: stop — unlocked engine");
 
-	// Send the "finished" event (not completed — we interrupted it)
-	[session pushEvent:@"{\"event\":\"finished\",\"completed\":false}" terminal:YES];
-
-	// Actually stop the synthesizer
+	// Actually stop the synthesizer (after releasing lock)
 	[synth stopSpeaking];
 	LOG_TRACE(@"speech: stop — done");
 }

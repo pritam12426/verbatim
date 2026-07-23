@@ -57,6 +57,19 @@ static const NSUInteger kRecvChunk = 4096;
 // exceeding this are rejected immediately to prevent memory exhaustion.
 static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 
+// Maximum number of concurrent connection threads (DoS mitigation).
+// Prevents a malicious client from exhausting system resources by
+// opening thousands of connections simultaneously.
+static const NSUInteger kMaxConcurrentThreads = 64;
+
+// Receive timeout on client sockets (30 seconds).  Prevents slowloris
+// DoS where a client connects but sends data very slowly.
+static const int kRecvTimeoutSeconds = 30;
+
+// Protected counter for active connection threads.
+static NSUInteger        g_activeThreads = 0;
+static NSCondition       *g_threadCond   = nil;
+
 // ---------------------------------------------------------------------------
 // HttpHeader / HttpRequest / ServerConfig @implementation
 // ---------------------------------------------------------------------------
@@ -107,9 +120,11 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 {
 	LOG_TRACE(@"http: new connection on fd=%d", fd);
 
-	// Extract client IP for logging.  getpeername() gives us the
-	// sockaddr_in of the connecting client, which we convert to a
-	// dotted-decimal string via inet_ntop().
+	// Set receive timeout on client socket to prevent slowloris DoS
+	struct timeval tv = { kRecvTimeoutSeconds, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	// Extract client IP for logging.
 	NSString          *clientIP = @"?";
 	struct sockaddr_in peer;
 	socklen_t          peerLen = sizeof(peer);
@@ -150,7 +165,17 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 	NSString  *contentLengthHdr = [req headerWithName:@"Content-Length"];
 
 	if (contentLengthHdr) {
-		contentLength = (NSUInteger)[contentLengthHdr integerValue];
+		// Validate Content-Length is a purely numeric non-negative value.
+		// integerValue returns 0 for non-numeric strings, which would
+		// silently treat a malformed header as "no body" — reject it.
+		NSScanner *clScanner = [NSScanner scannerWithString:contentLengthHdr];
+		long long  clValue   = 0;
+		if (![clScanner scanLongLong:&clValue] || ![clScanner isAtEnd] || clValue < 0) {
+			LOG_WARN(@"%@: malformed Content-Length '%@', rejecting", clientIP, contentLengthHdr);
+			close(fd);
+			return;
+		}
+		contentLength = (NSUInteger) clValue;
 		LOG_TRACE(@"http: Content-Length = %lu", (unsigned long) contentLength);
 
 		// Reject oversized bodies immediately (prevent memory exhaustion)
@@ -191,6 +216,16 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 			[bodyData appendBytes:chunk length:(NSUInteger) n];
 			remaining -= (NSUInteger) n;
 			LOG_TRACE(@"http: body recv %zd bytes (remaining=%lu)", n, (unsigned long) remaining);
+		}
+
+		// M6: Reject truncated bodies — don't speak partial text
+		if (remaining > 0) {
+			LOG_WARN(@"%@: body truncated (got %lu of %lu bytes), rejecting",
+			         clientIP,
+			         (unsigned long) (contentLength - remaining),
+			         (unsigned long) contentLength);
+			close(fd);
+			return;
 		}
 
 		// Convert body bytes to an NSString (UTF-8 encoding)
@@ -248,7 +283,11 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 
 	// Allow immediate reuse of the port after restart (avoid TIME_WAIT)
 	int yes = 1;
-	setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
+		LOG_FATAL(@"http: setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+		close(server_fd);
+		return 1;
+	}
 	LOG_TRACE(@"http: SO_REUSEADDR enabled");
 
 	// Fill in the sockaddr_in structure
@@ -282,6 +321,9 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 	// Log the listening address so the user knows where to connect
 	LOG_INFO(@"verbatimd listening on http://%@:%u", config.host, config.port);
 
+	// Initialize the thread-count condition variable (M2)
+	g_threadCond = [[NSCondition alloc] init];
+
 	// ── Accept loop ────────────────────────────────────────────────────
 	// This loop runs forever (until the process is killed).
 	// Each accepted connection gets its own NSThread.
@@ -297,11 +339,26 @@ static const NSUInteger kRecvMaxBodyBytes = 1024 * 1024;
 
 		LOG_TRACE(@"http: accepted connection (fd=%d)", client_fd);
 
+		// M2: Throttle if too many concurrent connections
+		[g_threadCond lock];
+		while (g_activeThreads >= kMaxConcurrentThreads) {
+			LOG_WARN(@"http: %lu concurrent connections (max %lu), throttling",
+			         (unsigned long) g_activeThreads,
+			         (unsigned long) kMaxConcurrentThreads);
+			[g_threadCond wait];
+		}
+		g_activeThreads++;
+		[g_threadCond unlock];
+
 		// Spawn a new thread for this connection.
-		// NSThread is used instead of pthread because it integrates
-		// with ARC and supports blocks for clean variable capture.
 		NSThread *thread = [[NSThread alloc] initWithBlock:^{
 			[self handleConnectionWithFD:client_fd config:config];
+
+			// Decrement thread counter when done
+			[g_threadCond lock];
+			g_activeThreads--;
+			[g_threadCond signal];
+			[g_threadCond unlock];
 		}];
 		thread.name = [NSString stringWithFormat:@"com.pritam.verbatim.connection-%d", client_fd];
 		[thread start];

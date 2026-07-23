@@ -149,9 +149,18 @@ static const NSInteger kHTTPMaxHeaderValue = 256;
 	if (!raw)
 		return nil;  // Data is not valid UTF-8
 
+	// Find the header/body boundary in character space by searching for
+	// \r\n\r\n.  We cannot use the byte-based headerEnd offset directly
+	// because NSString character offsets differ from byte offsets when
+	// header values contain non-ASCII (multi-byte UTF-8) characters.
+	NSRange boundary = [raw rangeOfString:@"\r\n\r\n"];
+	if (boundary.location == NSNotFound)
+		return nil;
+	NSUInteger headerEndChar = boundary.location + boundary.length;
+
 	// Find first \r\n (end of request line)
 	NSRange firstLine = [raw rangeOfString:@"\r\n"];
-	if (firstLine.location == NSNotFound || firstLine.location >= headerEnd) {
+	if (firstLine.location == NSNotFound || firstLine.location >= headerEndChar) {
 		LOG_TRACE(@"http: parseHead failed — no request line found");
 		return nil;
 	}
@@ -177,12 +186,12 @@ static const NSInteger kHTTPMaxHeaderValue = 256;
 	NSUInteger cursor      = firstLine.location + 2;
 	NSUInteger headerCount = 0;
 
-	// Walk line by line until we hit the blank line (headerEnd)
-	while (cursor < headerEnd && headerCount < kHTTPMaxHeaders) {
+	// Walk line by line until we hit the blank line (headerEndChar)
+	while (cursor < headerEndChar && headerCount < kHTTPMaxHeaders) {
 		// Find the next \r\n
 		NSRange nextLine = [raw rangeOfString:@"\r\n"
 		                              options:0
-		                                range:NSMakeRange(cursor, headerEnd - cursor)];
+		                                range:NSMakeRange(cursor, headerEndChar - cursor)];
 
 		if (nextLine.location == NSNotFound || nextLine.location == cursor)
 			break;  // Empty line = end of headers

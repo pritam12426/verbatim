@@ -39,6 +39,10 @@ NS_ASSUME_NONNULL_BEGIN
 // via POSIX send().
 @interface HttpResponse : NSObject
 
+// Sends all bytes on fd, handling short writes.  Returns YES on success,
+// NO on error/disconnect.  Wraps POSIX send() in a loop.
++ (BOOL)sendAll:(int)fd data:(NSData *)data;
+
 // Writes a complete, non-streamed HTTP response with Content-Length.
 //
 // Sends the full HTTP response (status line + headers + body) in one
@@ -62,7 +66,8 @@ NS_ASSUME_NONNULL_BEGIN
 //   3. endChunksWithFD: — sends the terminating "0\r\n\r\n"
 
 // Sends the HTTP response headers for a chunked transfer.
-+ (void)beginChunkedWithFD:(int)fd contentType:(NSString *)contentType;
+// Returns YES on success, NO on failure.
++ (BOOL)beginChunkedWithFD:(int)fd contentType:(NSString *)contentType;
 
 // Sends a single chunk: hex-size\r\n data \r\n
 + (void)writeChunkWithFD:(int)fd data:(NSData *)data;

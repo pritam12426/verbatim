@@ -27,11 +27,11 @@
 // ── Default values ───────────────────────────────────────────────────────────
 // These are the built-in defaults if no CLI flags are provided.
 // They match the values documented in --help output.
-static NSString *const      kDefaultHost     = @"127.0.0.1";  // Loopback only (security)
-static const unsigned short kDefaultPort     = 5959;          // Arbitrary high port
-static const float          kDefaultRate     = 175.0f;        // Natural speech rate
-static NSString *const      kDefaultLogLevel = @"info";       // Reasonable default
-static NSString *const      kAppVersion      = @"0.1.0";      // Must match project_config.h
+static NSString *const      kDefaultHost     = @"127.0.0.1";    // Loopback only (security)
+static const unsigned short kDefaultPort     = 5959;            // Arbitrary high port
+static const float          kDefaultRate     = 175.0f;          // Natural speech rate
+static NSString *const      kDefaultLogLevel = @"info";         // Reasonable default
+static NSString *const      kAppVersion      = kProjectVersion; // Must match project_config.h
 
 @implementation CommandLineArguments
 
@@ -254,17 +254,26 @@ static NSString *const      kAppVersion      = @"0.1.0";      // Must match proj
 				return nil;
 			}
 
-			// Parse rate as a float
-			NSScanner *scanner = [NSScanner scannerWithString:value];
-			float      rate    = 0.0f;
-			if (![scanner scanFloat:&rate] || ![scanner isAtEnd]) {
-				LOG_TRACE(@"cmdline: --rate invalid value '%@'", value);
-				NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
-				NSString *msg = [NSString stringWithFormat:@"error: invalid rate '%@'\n", value];
-				[stderrHandle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
-				[self printUsage:[NSString stringWithUTF8String:argv[0]]];
-				return nil;
-			}
+		// Parse rate as a float
+		NSScanner *scanner = [NSScanner scannerWithString:value];
+		float      rate    = 0.0f;
+		if (![scanner scanFloat:&rate] || ![scanner isAtEnd]) {
+			LOG_TRACE(@"cmdline: --rate invalid value '%@'", value);
+			NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
+			NSString *msg = [NSString stringWithFormat:@"error: invalid rate '%@'\n", value];
+			[stderrHandle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+			[self printUsage:[NSString stringWithUTF8String:argv[0]]];
+			return nil;
+		}
+		// Reject NaN — NSScanner may accept "nan" as a valid float
+		if (rate != rate) {
+			LOG_TRACE(@"cmdline: --rate is NaN '%@'", value);
+			NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
+			NSString *msg = [NSString stringWithFormat:@"error: rate cannot be NaN\n"];
+			[stderrHandle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+			[self printUsage:[NSString stringWithUTF8String:argv[0]]];
+			return nil;
+		}
 			args.rate = rate;
 			LOG_TRACE(@"cmdline: setting rate=%.1f", (double) args.rate);
 		} else if ([name isEqualToString:@"-L"] || [name isEqualToString:@"--log-level"]) {
@@ -381,7 +390,8 @@ static NSString *const      kAppVersion      = @"0.1.0";      // Must match proj
 	}
 
 	// Validate rate (1-1000 wpm, reasonable range for NSSpeechSynthesizer)
-	if (self.rate < 1.0f || self.rate > 1000.0f) {
+	// Also reject NaN (rate != rate is the IEEE 754 NaN self-inequality check)
+	if (self.rate != self.rate || self.rate < 1.0f || self.rate > 1000.0f) {
 		LOG_TRACE(@"cmdline: validation failed — rate %.1f out of range", (double) self.rate);
 		if (error)
 			*error = @"rate must be between 1 and 1000 words per minute";

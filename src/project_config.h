@@ -24,12 +24,12 @@ static NSString *const kMainBinary = @"verbatimd";
 
 // ── Semantic version (semver.org) ───────────────────────────────────────────
 // The full version string, used by --version and diagnostic logging.
-static NSString *const kProjectVersion = @"0.1.0";
+static NSString *const kProjectVersion = @"1.0.0";
 
 // Individual semver components, useful for compile-time comparisons or
 // embedding in Info.plist without string parsing.
-static const int kProjectVersionMajor = 0;  // Incompatible API changes
-static const int kProjectVersionMinor = 1;  // Added functionality (backward compatible)
+static const int kProjectVersionMajor = 1;  // Incompatible API changes
+static const int kProjectVersionMinor = 0;  // Added functionality (backward compatible)
 static const int kProjectVersionPatch = 0;  // Backward-compatible bug fixes
 
 // ── Project metadata ────────────────────────────────────────────────────────

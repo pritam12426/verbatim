@@ -87,7 +87,7 @@ static BOOL     _initialized = NO;            // guards against use before +init
 //   TRACE  — magenta (extremely verbose)
 + (NSString *)levelLabelColored:(LogLevel)level
 {
-	    // 💀 [FATAL], 🚨 [ERROR], ⚠️ [WARN ], ℹ️ [INFO ], 🛠️ [DEBUG], 🔬 [TRACE]
+	// 💀 [FATAL], 🚨 [ERROR], ⚠️ [WARN ], ℹ️ [INFO ], 🛠️ [DEBUG], 🔬 [TRACE]
 	switch (level) {
 		case LogLevelFatal:
 			return [NSString stringWithFormat:@"\U0001F480 [%@FATAL%@] ", kColorBoldBlue, kColorReset];
@@ -183,18 +183,24 @@ static BOOL     _initialized = NO;            // guards against use before +init
 
 // Log strerror(errno) as a separate LOG_ERROR line.
 // Saves errno immediately (in case another call modifies it),
-// converts it to a human-readable string via strerror(), and
-// writes it directly to stderr (bypassing the normal +record:
-// path to avoid re-entrancy issues with the lock).
+// formats the message inside @synchronized to prevent interleaved
+// output and to avoid calling strerror() outside the lock (strerror
+// is not thread-safe on all platforms — it may use a shared buffer).
 + (void)logErrno
 {
-	int         savedErrno = errno;  // Save errno immediately
-	const char *msg        = strerror(savedErrno);
-	NSString   *message    = [NSString stringWithFormat:@"[LOG] errno=%d: %s", savedErrno, msg];
+	int savedErrno = errno;  // Save errno immediately
 
-	NSFileHandle *stderrHandle = [NSFileHandle fileHandleWithStandardError];
-	[stderrHandle writeData:[message dataUsingEncoding:NSUTF8StringEncoding]];
-	[stderrHandle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	@synchronized(self) {
+		if (!_initialized) {
+			return;
+		}
+		// Use %d instead of %s with strerror() to avoid thread-safety
+		// issues with strerror's shared buffer on some platforms.
+		NSString *message = [NSString stringWithFormat:@"[LOG] errno=%d", savedErrno];
+		NSFileHandle *handle = [NSFileHandle fileHandleWithStandardError];
+		[handle writeData:[message dataUsingEncoding:NSUTF8StringEncoding]];
+		[handle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+	}
 }
 
 // Core logging function: formats and writes a log message.
@@ -222,27 +228,27 @@ static BOOL     _initialized = NO;            // guards against use before +init
        newLine:(BOOL)newLine
            fmt:(NSString *)fmt, ...
 {
-	// Guard: +init: must have been called before any LOG_* macro.
-	// If it wasn't, print an error and drop the message.
-	if (!_initialized) {
-		NSString     *msg    = [NSString stringWithFormat:@"%@[LOG] error: +[Logger init:] not "
-		                                                  @"called — dropping message%@",
-                                                   kColorBoldRed,
-                                                   kColorReset];
-		NSFileHandle *handle = [NSFileHandle fileHandleWithStandardError];
-		[handle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
-		if (newLine)
-			[handle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
-		return;
-	}
-
 	// Guard: nil format string — nothing to log
 	if (fmt == nil)
 		return;
 
 	// Take a lock so only one thread writes at a time.
 	// This prevents interleaved log lines from concurrent requests.
+	// The _initialized check is inside the lock to avoid a data race
+	// on _initialized (which is written by +init: under the same lock).
 	@synchronized(self) {
+		if (!_initialized) {
+			NSString     *msg    = [NSString stringWithFormat:@"%@[LOG] error: +[Logger init:] not "
+			                                                  @"called — dropping message%@",
+                                                       kColorBoldRed,
+                                                       kColorReset];
+			NSFileHandle *handle = [NSFileHandle fileHandleWithStandardError];
+			[handle writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+			if (newLine)
+				[handle writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+			return;
+		}
+
 		// Suppress messages below the configured level.
 		// LogLevelInfo (4) means FATAL(1), ERROR(2), WARN(3), INFO(4) are
 		// emitted; DEBUG(5) and TRACE(6) are suppressed.
