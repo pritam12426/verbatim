@@ -23,61 +23,61 @@
 ## 2. High-Level Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        main thread                                │
-│  CommandLineArguments.parseArgc:argv:                             │
-│       ↓                                                           │
-│  Logger.init: → ServerConfig.alloc/init                           │
-│       ↓                                                           │
-│  [NSThread startWithBlock:] ─────────────────────────────────┐    │
-│       ↓                                                      │    │
-│  CFRunLoopRun()  [blocks forever — keeps NSSpeechSynthesizer │    │
+┌─────────────────────────────────────────────────────────────────────┐
+│                        main thread                                  │
+│  CommandLineArguments.parseArgc:argv:                               │
+│       ↓                                                            │
+│  Logger.init: → ServerConfig.alloc/init                            │
+│       ↓                                                            │
+│  [NSThread startWithBlock:] ───────────────────────────────────┐    │
+│       ↓                                                       │    │
+│  CFRunLoopRun()  [blocks forever — keeps NSSpeechSynthesizer  │    │
 │                   delegate callbacks alive]                    │    │
-└──────────────────────────────────────────────────────────────┼────┘
-                                                               │
-                                                               ▼
+└────────────────────────────────────────────────────────────────┼────┘
+                                                                 │
+                                                                 ▼
                         ┌──────────────────────────────────────────┐
-                        │  HTTP server thread (NSThread block)      │
+                        │  HTTP server thread (NSThread block)     │
                         │                                          │
-                        │  socket → bind → listen → accept loop    │
+                        │  socket → bind → listen → accept loop │
                         │       │                                  │
-                        │       ▼                                  │
-                        │  NSThread block per connection            │
+                        │       ▼                                 │
+                        │  NSThread block per connection           │
                         │  (blocks, no pthread_create/detach)      │
                         └──────────┬───────────────────────────────┘
                                    │
                                    ▼
-                        ┌──────────────────────────────────────────┐
-                        │  Connection thread (NSThread block)       │
-                        │                                          │
-                        │  [HttpParse recvUntilHeadersDoneWithFD:]  │
-                        │       ↓                                  │
-                        │  [HttpParse parseHeadWithData:]           │
-                        │       ↓                                  │
-                        │  Read body (Content-Length)               │
-                        │       ↓                                  │
-                        │  Route dispatch:                         │
-                        │    POST /    → [Routes speakWithFD:...]   │
-                        │    POST /stop → [Routes stopWithFD:...]   │
-                        │    GET /status → [Routes statusWithFD:...]│
-                        │    GET /voices → [Routes voicesWithFD:...]│
-                        │       ↓                                  │
-                        │  close(fd)                                │
-                        └──────────┬───────────────────────────────┘
+                        ┌──────────────────────────────────────────────┐
+                        │  Connection thread (NSThread block)          │
+                        │                                              │
+                        │  [HttpParse recvUntilHeadersDoneWithFD:]     │
+                        │       ↓                                     │
+                        │  [HttpParse parseHeadWithData:]              │
+                        │       ↓                                     │
+                        │  Read body (Content-Length)                  │
+                        │       ↓                                     │
+                        │  Route dispatch:                             │
+                        │    POST /    → [Routes speakWithFD:...]     │
+                        │    POST /stop → [Routes stopWithFD:...]     │
+                        │    GET /status → [Routes statusWithFD:...]  │
+                        │    GET /voices → [Routes voicesWithFD:...]  │
+                        │       ↓                                     │
+                        │  close(fd)                                   │
+                        └──────────┬───────────────────────────────────┘
                                    │
                                    ▼
-                        ┌──────────────────────────────────────────┐
-                        │  Speech engine (global, lock-guarded)     │
-                        │                                          │
-                        │  SpeechBridge.speakWithSession:           │
-                        │    → NSSpeechSynthesizer.startSpeaking   │
+                        ┌─────────────────────────────────────────────┐
+                        │  Speech engine (global, lock-guarded)       │
+                        │                                             │
+                        │  SpeechBridge.speakWithSession:             │
+                        │    → NSSpeechSynthesizer.startSpeaking     │
                         │    → delegate willSpeakWord → push_event  │
                         │    → delegate didFinishSpeaking → push    │
-                        │                                          │
-                        │  VerbatimSession.nextEvent               │
-                        │    → NSCondition wait/signal queue        │
-                        │    → returns NDJSON string or nil         │
-                        └──────────────────────────────────────────┘
+                        │                                             │
+                        │  VerbatimSession.nextEvent                  │
+                        │    → NSCondition wait/signal queue         │
+                        │    → returns NDJSON string or nil          │
+                        └─────────────────────────────────────────────┘
 ```
 
 **Key invariants:**
@@ -94,20 +94,20 @@
 
 ```
 src/
-├── project_config.h         # VERSION, BINARY_NAME, HOMEPAGE_URL, SHORT_DESC constants
-├── command_line.h/.m        # Native ObjC argv parsing (replaces argp, no external deps)
-├── log.h/.m                 # Thread-safe leveled logging with ANSI colour, timestamps
-├── json_writer.h/.m         # JSON serialization via NSJSONSerialization ([JSONWriter serialize:])
-├── http_parse.h/.m          # HTTP request parsing (recv + parse head + headers)
-├── http_response.h/.m       # HTTP response writing (plain + chunked streaming)
-├── http_server.h/.m         # Minimal hand-rolled HTTP/1.1 server (thread-per-connection)
-├── voices.h/.m              # GET /voices — shells out to `say -v '?'` via NSTask, cached
-├── route_helpers.h/.m       # Shared route utilities (speed mapping, JSON response/error helpers)
-├── route_speak.h/.m         # POST / handler (Routes (Speak) category, NDJSON streaming)
-├── speech_bridge.h/.m       # NSSpeechSynthesizer wrapper (global engine, delegate callbacks)
-├── verbatim_event_queue.h/.m # Thread-safe event queue (VerbatimSession + VerbatimEventQueue)
-├── routes.h/.m              # Remaining HTTP endpoints (stop, status, voices, 404)
-└── main.m                   # Entry point: parses args, starts server, runs CFRunLoop
+├── project_config.h           # VERSION, BINARY_NAME, HOMEPAGE_URL, SHORT_DESC constants
+├── command_line.h/.m          # Native ObjC argv parsing (replaces argp, no external deps)
+├── log.h/.m                   # Thread-safe leveled logging with ANSI colour, timestamps
+├── json_writer.h/.m           # JSON serialization via NSJSONSerialization ([JSONWriter serialize:])
+├── http_parse.h/.m            # HTTP request parsing (recv + parse head + headers)
+├── http_response.h/.m         # HTTP response writing (plain + chunked streaming)
+├── http_server.h/.m           # Minimal hand-rolled HTTP/1.1 server (thread-per-connection)
+├── voices.h/.m                # GET /voices — shells out to `say -v '?'` via NSTask, cached
+├── route_helpers.h/.m         # Shared route utilities (speed mapping, JSON response/error helpers)
+├── route_speak.h/.m           # POST / handler (Routes (Speak) category, NDJSON streaming)
+├── speech_bridge.h/.m         # NSSpeechSynthesizer wrapper (global engine, delegate callbacks)
+├── verbatim_event_queue.h/.m  # Thread-safe event queue (VerbatimSession + VerbatimEventQueue)
+├── routes.h/.m                # Remaining HTTP endpoints (stop, status, voices, 404)
+└── main.m                     # Entry point: parses args, starts server, runs CFRunLoop
 ```
 
 **No subdirectories.** Flat `src/` with `.h/.m` pairs. Makefile uses `$(wildcard src/*.m)`.
@@ -315,7 +315,10 @@ CC = clang
 CFLAGS = -Isrc -std=c17 -fobjc-arc -Wall -Wextra -Wpedantic \
          -Wshadow -Wconversion -Wstrict-prototypes -Wmissing-prototypes
 LDFLAGS += -lpthread -framework Foundation -framework AppKit
+```
 
+
+```sh
 # Debug (ASan + UBSan):
 make debug
 # → -g3 -DDEBUG -DLOG_SHOW_SOURCE_LOCATION -DLOG_SHOW_TIME_STAMP
@@ -435,6 +438,10 @@ curl -X POST http://127.0.0.1:5959/stop
 ## 12. Quick Commands
 
 ```sh
+# show available targets and build options
+
+make help
+
 # Build release
 make
 
