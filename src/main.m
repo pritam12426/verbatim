@@ -99,6 +99,18 @@ int main(int argc, char *argv[])
 		LOG_TRACE(@"main: re-initializing logger at level=%ld", (long) level);
 		[Logger init:level];
 
+		// Log the command-line arguments at DEBUG level
+		if (LOG_LEVEL_IS_ENABLED(LogLevelDebug)) {
+			NSMutableString *argsStr = [NSMutableString stringWithString:@"Command-line args: ["];
+			for (int i = 0; i < argc; i++) {
+				[argsStr appendFormat:@"\"%s\"", argv[i]];
+				if (i != argc - 1)
+					[argsStr appendString:@", "];
+			}
+			[argsStr appendString:@"]"];
+			LOG_DEBUG(@"%@", argsStr);
+		}
+
 		// Log the startup configuration at INFO level
 		LOG_INFO(@"verbatim-d starting: host=%@ port=%hu rate=%.1f wpm log-level=%@",
 		         args.host,
