@@ -108,7 +108,7 @@ static BOOL     _initialized = NO;            // guards against use before +init
 
 #ifdef LOG_SHOW_TIME_STAMP
 
-// Returns a microsecond-precision timestamp string: "HH:MM:SS.uuuuuu"
+// Returns a microsecond-precision timestamp string: "DD-Mon-YYYY HH:MM:SS.uuuuuu"
 //
 // We use NSDate/NSTimeInterval rather than POSIX clock_gettime()
 // because this is the ObjC codebase and we want Foundation-only
@@ -123,15 +123,15 @@ static BOOL     _initialized = NO;            // guards against use before +init
 	long long seconds = (long long) interval;
 	int       us      = (int) ((interval - (double) seconds) * 1000000.0);
 
-	// Format the time-of-day portion as HH:mm:ss
+	// Format the date portion as "23-Jul-2026"
 	NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-	formatter.dateFormat       = @"HH:mm:ss";
+	formatter.dateFormat       = @"dd-MMM-yyyy HH:mm:ss";
 	formatter.timeZone         = [NSTimeZone localTimeZone];
 
 	NSDate   *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval) seconds];
 	NSString *time = [formatter stringFromDate:date];
 
-	// Combine: "14:32:05.123456"
+	// Combine: "23-Jul-2026 12:18:26.093969"
 	return [NSString stringWithFormat:@"%@.%06d", time, us];
 }
 

@@ -255,6 +255,13 @@ verbatim/
 
 Use `LOG_*` macros (`LOG_INFO`, `LOG_ERROR`, etc.). Every HTTP request is logged at INFO level with client IP. Thread safety is via `@synchronized` on the Logger class.
 
+Read logs in a separate terminal:
+
+```sh
+log stream --predicate 'process == "verbatimd"'
+log show --predicate 'process == "verbatimd"' --last 100
+```
+
 ### Error handling
 
 - **POSIX errors:** Logged via `LOG_PERROR` (includes `strerror(errno)`).

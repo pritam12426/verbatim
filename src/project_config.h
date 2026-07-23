@@ -24,7 +24,7 @@ static NSString *const kMainBinary = @"verbatimd";
 
 // ── Semantic version (semver.org) ───────────────────────────────────────────
 // The full version string, used by --version and diagnostic logging.
-static NSString *const kProjectVersion = @"1.0.0";
+static NSString *const kProjectVersion = @"1.0.1";
 
 // Individual semver components, useful for compile-time comparisons or
 // embedding in Info.plist without string parsing.

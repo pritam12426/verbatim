@@ -184,5 +184,21 @@ uninstall:  ## Uninstall the verbatimd binary
 strip: $(BIN)  ## Strip the verbatimd binary
 	$(STRIP) $^
 
+PLIST_IN  = verbatimd.plist.in
+PLIST_OUT = $(HOME)/Library/LaunchAgents/local.verbatimd.plist
+
+install-launch-agent: all  ## Install verbatimd as a launchd agent
+	@mkdir -p $(HOME)/Library/LaunchAgents
+	@mkdir -p $(HOME)/Library/Logs/verbatimd
+	sed 's|~|$(HOME)|g' $(PLIST_IN) > $(PLIST_OUT)
+	launchctl unload $(PLIST_OUT) 2>/dev/null || true
+	launchctl load $(PLIST_OUT)
+	@echo "installed and loaded $(PLIST_OUT)"
+
+uninstall-launch-agent:  ## Remove verbatimd launchd agent
+	launchctl unload $(PLIST_OUT) 2>/dev/null || true
+	$(RM) $(PLIST_OUT)
+	@echo "removed $(PLIST_OUT)"
+
 # Declare phony targets (targets that don't produce a file with that name)
-.PHONY: all install uninstall strip clean debug format
+.PHONY: all install uninstall strip clean debug format install-launch-agent uninstall-launch-agent

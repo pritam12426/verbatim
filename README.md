@@ -25,6 +25,15 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+Auto-start at login (optional):
+
+```sh
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs/verbatimd
+curl -fL https://raw.githubusercontent.com/pritam12426/verbatim/refs/heads/main/verbatimd.plist.in \
+  | sed "s|\~|$HOME|g" > ~/Library/LaunchAgents/local.verbatimd.plist
+launchctl load ~/Library/LaunchAgents/local.verbatimd.plist
+```
+
 ### From source
 
 Requires Xcode Command Line Tools (`xcode-select --install`).
@@ -36,6 +45,17 @@ make                              # release build → ./verbatimd
 make install                      # copies to /usr/local/bin/verbatimd
 make install PREFIX="$HOME/.local" # or custom prefix
 ```
+
+### Auto-start at login
+
+Install as a macOS launch agent so verbatimd starts automatically on login and restarts on crash:
+
+```sh
+make install-launch-agent   # install + load
+make uninstall-launch-agent # unload + remove
+```
+
+The plist is installed to `~/Library/LaunchAgents/local.verbatimd.plist`. Logs go to `~/Library/Logs/verbatimd/`.
 
 ## Quick start
 
@@ -196,6 +216,22 @@ make format   # auto-format with .clang-format (tabs, 100-col, pointer-right)
 | `trace` | Per-word delegate callbacks, stray callback suppression           |
 
 Default `info` gives a clear access log of all activity.
+
+### Reading logs
+
+```sh
+# Stream live logs
+log stream --predicate 'process == "verbatimd"'
+
+# Filter by log level
+log stream --predicate 'process == "verbatimd" AND messageType == 16'  # error only
+log stream --predicate 'process == "verbatimd" AND messageType == 17'  # warn+
+log stream --predicate 'process == "verbatimd" AND messageType == 18'  # info+
+log stream --predicate 'process == "verbatimd" AND messageType == 20'  # debug+
+
+# Show last 100 lines and exit
+log show --predicate 'process == "verbatimd"' --last 100
+```
 
 ## License
 
