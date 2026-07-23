@@ -67,20 +67,13 @@ static BOOL     _initialized = NO;            // guards against use before +init
 + (NSString *)levelLabel:(LogLevel)level
 {
 	switch (level) {
-	case LogLevelFatal:
-		return @"[FATAL]";
-	case LogLevelError:
-		return @"[ERROR]";
-	case LogLevelWarn:
-		return @"[WARN ]";
-	case LogLevelInfo:
-		return @"[INFO ]";
-	case LogLevelDebug:
-		return @"[DEBUG]";
-	case LogLevelTrace:
-		return @"[TRACE]";
-	default:
-		return @"[UNKWN]";
+		case LogLevelFatal: return @"[FATAL]";
+		case LogLevelError: return @"[ERROR]";
+		case LogLevelWarn:  return @"[WARN ]";
+		case LogLevelInfo:  return @"[INFO ]";
+		case LogLevelDebug: return @"[DEBUG]";
+		case LogLevelTrace: return @"[TRACE]";
+		default:            return @"[UNKWN]";
 	}
 }
 
@@ -94,21 +87,22 @@ static BOOL     _initialized = NO;            // guards against use before +init
 //   TRACE  — magenta (extremely verbose)
 + (NSString *)levelLabelColored:(LogLevel)level
 {
+	    // 💀 [FATAL], 🚨 [ERROR], ⚠️ [WARN ], ℹ️ [INFO ], 🛠️ [DEBUG], 🔬 [TRACE]
 	switch (level) {
-	case LogLevelFatal:
-		return [NSString stringWithFormat:@"\U0001F480 [%@FATAL%@] ", kColorBoldBlue, kColorReset];
-	case LogLevelError:
-		return [NSString stringWithFormat:@"\U0001F6A8 [%@ERROR%@] ", kColorBoldRed, kColorReset];
-	case LogLevelWarn:
-		return [NSString stringWithFormat:@"\u26A0\uFE0F  [%@WARN %@] ", kColorBoldYellow, kColorReset];
-	case LogLevelInfo:
-		return [NSString stringWithFormat:@"\u2139\uFE0F  [%@INFO %@] ", kColorBoldGreen, kColorReset];
-	case LogLevelDebug:
-		return [NSString stringWithFormat:@"\U0001F6E0\uFE0F  [%@DEBUG%@] ", kColorBoldCyan, kColorReset];
-	case LogLevelTrace:
-		return [NSString stringWithFormat:@"\U0001F52C [%@TRACE%@] ", kColorBoldMagenta, kColorReset];
-	default:
-		return [NSString stringWithFormat:@"[%@UNKWN%@] ", kColorBoldBlue, kColorReset];
+		case LogLevelFatal:
+			return [NSString stringWithFormat:@"\U0001F480 [%@FATAL%@] ", kColorBoldBlue, kColorReset];
+		case LogLevelError:
+			return [NSString stringWithFormat:@"\U0001F6A8 [%@ERROR%@] ", kColorBoldRed, kColorReset];
+		case LogLevelWarn:
+			return [NSString stringWithFormat:@"\u26A0\uFE0F  [%@WARN %@] ", kColorBoldYellow, kColorReset];
+		case LogLevelInfo:
+			return [NSString stringWithFormat:@"\u2139\uFE0F  [%@INFO %@] ", kColorBoldGreen, kColorReset];
+		case LogLevelDebug:
+			return [NSString stringWithFormat:@"\U0001F6E0\uFE0F  [%@DEBUG%@] ", kColorBoldCyan, kColorReset];
+		case LogLevelTrace:
+			return [NSString stringWithFormat:@"\U0001F52C [%@TRACE%@] ", kColorBoldMagenta, kColorReset];
+		default:
+			return [NSString stringWithFormat:@"[%@UNKWN%@] ", kColorBoldBlue, kColorReset];
 	}
 }
 
@@ -290,7 +284,7 @@ static BOOL     _initialized = NO;            // guards against use before +init
 		NSString *message = [[NSString alloc] initWithFormat:fmt arguments:args];
 		va_end(args);
 
-		[line_ appendFormat:@"[%@]", message];
+		[line_ appendString:message];
 
 		// Optionally append a newline
 		if (newLine)
