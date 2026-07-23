@@ -68,19 +68,19 @@ static BOOL     _initialized = NO;            // guards against use before +init
 {
 	switch (level) {
 	case LogLevelFatal:
-		return @"FATAL";
+		return @"[FATAL]";
 	case LogLevelError:
-		return @"ERROR";
+		return @"[ERROR]";
 	case LogLevelWarn:
-		return @"WARN ";  // 5 chars with trailing space
+		return @"[WARN ]";
 	case LogLevelInfo:
-		return @"INFO ";  // 5 chars with trailing space
+		return @"[INFO ]";
 	case LogLevelDebug:
-		return @"DEBUG";
+		return @"[DEBUG]";
 	case LogLevelTrace:
-		return @"TRACE";
+		return @"[TRACE]";
 	default:
-		return @"UNKWN";  // Unknown level (shouldn't happen)
+		return @"[UNKWN]";
 	}
 }
 
@@ -96,19 +96,19 @@ static BOOL     _initialized = NO;            // guards against use before +init
 {
 	switch (level) {
 	case LogLevelFatal:
-		return [NSString stringWithFormat:@"\U0001F480 %@FATAL%@", kColorBoldBlue, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F480 %@[FATAL]%@ ", kColorBoldBlue, kColorReset];
 	case LogLevelError:
-		return [NSString stringWithFormat:@"\U0001F6A8 %@ERROR%@", kColorBoldRed, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F6A8 %@[ERROR]%@ ", kColorBoldRed, kColorReset];
 	case LogLevelWarn:
-		return [NSString stringWithFormat:@"\u26A0\uFE0F  %@WARN %@", kColorBoldYellow, kColorReset];
+		return [NSString stringWithFormat:@"\u26A0\uFE0F  %@[WARN ]%@ ", kColorBoldYellow, kColorReset];
 	case LogLevelInfo:
-		return [NSString stringWithFormat:@"\u2139\uFE0F  %@INFO %@", kColorBoldGreen, kColorReset];
+		return [NSString stringWithFormat:@"\u2139\uFE0F  %@[INFO ]%@ ", kColorBoldGreen, kColorReset];
 	case LogLevelDebug:
-		return [NSString stringWithFormat:@"\U0001F6E0\uFE0F  %@DEBUG%@", kColorBoldCyan, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F6E0\uFE0F  %@[DEBUG]%@ ", kColorBoldCyan, kColorReset];
 	case LogLevelTrace:
-		return [NSString stringWithFormat:@"\U0001F52C %@TRACE%@", kColorBoldMagenta, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F52C %@[TRACE]%@ ", kColorBoldMagenta, kColorReset];
 	default:
-		return [NSString stringWithFormat:@"%@UNKWN%@", kColorBoldBlue, kColorReset];
+		return [NSString stringWithFormat:@"%@[UNKWN]%@ ", kColorBoldBlue, kColorReset];
 	}
 }
 
@@ -272,7 +272,7 @@ static BOOL     _initialized = NO;            // guards against use before +init
 		if (_useColor)
 			[line_ appendString:[self levelLabelColored:level]];
 		else
-			[line_ appendFormat:@"[%@] ", [self levelLabel:level]];
+			[line_ appendFormat:@"%@ ", [self levelLabel:level]];
 
 #ifdef LOG_SHOW_SOURCE_LOCATION
 		// Optional: source location [file:line:func]
