@@ -16,8 +16,10 @@ jobs:
       - name: Build release binary
         run: make
 
+      - name: Rename binary
+        run: mv verbatimd verbatimd-macos-arm64
+
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: verbatimd
-          asset_name: verbatimd-macos-arm64
+          files: verbatimd-macos-arm64
