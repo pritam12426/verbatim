@@ -11,7 +11,8 @@ verbatimd is a local macOS TTS server. It speaks text aloud via `NSSpeechSynthes
 - **Language:** 100% Objective-C (`.m` files, compiled as `-std=c17 -fobjc-arc`)
 - **Platform:** macOS only (`NSSpeechSynthesizer` is an AppKit API)
 - **Dependencies:** Zero runtime deps. Build-time: Xcode Command Line Tools (Foundation, AppKit, pthread)
-- **Binary:** Single executable `./verbatimd`
+- **Binary:** Single executable `./verbatimd` (~126 KB arm64)
+- **Version:** 1.0.0
 - **License:** MIT
 
 ## Complete Architecture
@@ -26,28 +27,30 @@ graph TD
 
     subgraph "HTTP server thread"
         C -->|socket/bind/listen| E[accept loop]
-        E -->|NSThread per connection| F[handleConnectionWithFD:config:]
+        E -->|throttle at 64| F{thread limit}
+        F -->|NSThread per connection| G[handleConnectionWithFD:config:]
     end
 
     subgraph "Connection thread"
-        F -->|recv| G[HttpParse]
-        G -->|HttpRequest| H{route dispatch}
-        H -->|POST /| I[route_speak]
-        H -->|POST /stop| J[Routes.stop]
-        H -->|GET /status| K[Routes.status]
-        H -->|GET /voices| L[Routes.voices]
-        H -->|unknown| M[Routes.notFound]
+        G -->|SO_RCVTIMEO 30s| H[recv]
+        H -->|HttpParse| I[HttpRequest]
+        I -->|validate Content-Length| J{route dispatch}
+        J -->|POST /| K[route_speak]
+        J -->|POST /stop| L[Routes.stop]
+        J -->|GET /status| M[Routes.status]
+        J -->|GET /voices| N[Routes.voices]
+        J -->|unknown| O[Routes.notFound]
     end
 
     subgraph "Speech engine"
-        I -->|create session| N[VerbatimSession]
-        I -->|speak| O[SpeechBridge]
-        O -->|create synthesizer| P[NSSpeechSynthesizer]
-        P -->|willSpeakWord| Q[VerbatimSpeechDelegate]
-        P -->|didFinishSpeaking| Q
-        Q -->|push events| N
-        I -->|pull events| N
-        N -->|write chunks| R[HttpResponse]
+        K -->|create session| P[VerbatimSession]
+        K -->|speak| Q[SpeechBridge]
+        Q -->|create synthesizer| R[NSSpeechSynthesizer]
+        R -->|willSpeakWord| S[VerbatimSpeechDelegate]
+        R -->|didFinishSpeaking| S
+        S -->|push events (inside lock)| P
+        K -->|pull events| P
+        P -->|sendAll chunks| T[HttpResponse]
     end
 ```
 
@@ -57,7 +60,9 @@ graph TD
 - HTTP server runs on its own background thread, spawns one NSThread block per connection.
 - Speech engine is a single global `NSSpeechSynthesizer` guarded by `NSLock`. One utterance at a time.
 - `sender != g_synth` identity check prevents stray callbacks from a superseded synthesizer.
+- **All event pushes happen inside `g_engine_lock`** to prevent ordering inversions with concurrent `stop()`.
 - Event queue uses `NSCondition` for push-from-delegate / blocking-pull-from-HTTP.
+- Lock ordering is always: `g_engine_lock` → queue `NSCondition`. Consistent everywhere, no deadlock.
 
 ## Execution Flow
 
@@ -69,24 +74,27 @@ graph TD
 4. `[args resolveLogLevel:&level]` — convert string to `LogLevel` enum
 5. `[Logger init:level]` — reinitialize at user-specified level
 6. Build `ServerConfig` (heap-allocated, outlives main())
-7. `[args validateWithError:]` — validate host (non-empty, ≤253 chars), port (1024–65535), rate (1–1000 WPM)
+7. `[args validateWithError:]` — validate host (non-empty, ≤253 chars), port (1024–65535), rate (1–1000 WPM, not NaN)
 8. `[NSThread startWithBlock:]` — launch HTTP server thread
 9. `CFRunLoopRun()` — block main thread forever (required for speech callbacks)
 
 ### Request lifecycle (POST /)
 
 1. `accept()` → client_fd
-2. NSThread block spawned for this connection
-3. Connection thread: `[HttpParse recvUntilHeadersDoneWithFD:...]` → raw data
-4. `[HttpParse parseHeadWithData:]` → `HttpRequest*` (method, path, headers)
-5. Read body: `Content-Length` → `NSMutableData` → `NSString`
-6. Route dispatch: `[Routes speakWithFD:fd request:req config:config clientIP:clientIP]`
-7. Validate body non-empty, read `TTS-Voice`/`TTS-Speed`/`ndjson` headers
-8. `[RouteHelpers mapSpeedToRate:]` → WPM
-9. If ndjson: `[HttpResponse beginChunkedWithFD:contentType:@"application/x-ndjson"]`
-10. `VerbatimSession *session = [[VerbatimSession alloc] init]`
-11. `[SpeechBridge speakWithSession:session text:body rate:rate voiceName:voice]`
-12. Loop `[session nextEvent]` → write NDJSON chunks → end chunks when nil returned
+2. `setsockopt(SO_RCVTIMEO, 30s)` on client socket (slowloris mitigation)
+3. NSThread block spawned for this connection (throttled at 64 concurrent)
+4. Connection thread: `[HttpParse recvUntilHeadersDoneWithFD:...]` → raw data
+5. `[HttpParse parseHeadWithData:]` → `HttpRequest*` (method, path, headers) — uses NSString character offsets (safe for non-ASCII)
+6. Validate `Content-Length` with `NSScanner` (reject non-numeric/negative)
+7. Read body, reject truncated (short recv) and oversized (>1 MB)
+8. Route dispatch: `[Routes speakWithFD:fd request:req config:config clientIP:clientIP]`
+9. Validate body non-empty, read `TTS-Voice`/`TTS-Speed`/`ndjson` headers
+10. `[RouteHelpers mapSpeedToRate:]` → WPM
+11. If ndjson: `[HttpResponse beginChunkedWithFD:...]` — returns BOOL, abort on failure
+12. `VerbatimSession *session = [[VerbatimSession alloc] init]`
+13. `[SpeechBridge speakWithSession:session text:body rate:rate voiceName:voice]`
+14. Loop `[session nextEvent]` → write NDJSON chunks via `sendAll` → end chunks when nil returned
+15. Check overall stream deadline (3× estimated speech time + 30s, minimum 60s)
 
 ### Speech engine flow
 
@@ -95,13 +103,13 @@ graph TD
 3. Resolves voice name via `resolveVoiceName:` (case-insensitive match against `NSVoiceName` attribute)
 4. Creates new `NSSpeechSynthesizer`, assigns delegate + rate
 5. Updates global state (`g_synth`, `g_delegate`, `g_current_session`)
-6. Pushes `{"event":"started"}` while holding lock
+6. **Pushes `{"event":"started"}` while holding lock** — prevents concurrent stop() from injecting terminal first
 7. Releases lock
 8. Interrupts previous synth (if any) — sends `finished` event with `completed:false`
 9. Calls `[synth startSpeakingString:text]`
 10. Delegate callbacks fire on main thread's run loop:
-    - `willSpeakWord:ofString:` → pushes `{"event":"word","start":N,"length":N}`
-    - `didFinishSpeaking:` → pushes `{"event":"finished","completed":bool}`, clears global state
+    - `willSpeakWord:ofString:` — acquires lock, pushes `{"event":"word","start":N,"length":N}` **inside lock**, releases
+    - `didFinishSpeaking:` — acquires lock, pushes `{"event":"finished","completed":bool}` **inside lock**, clears global state, releases
 
 ## Source Tree Walkthrough
 
@@ -111,11 +119,11 @@ Compile-time constants: `kVerbatim` (product name), `kMainBinary` (binary name),
 
 ### `command_line.h/.m`
 
-Custom argument parser replacing GNU argp (which requires Homebrew on macOS). Supports `-H VALUE`, `--host VALUE`, `--host=VALUE` forms. Returns `CommandLineArguments` object with `host`, `port`, `rate`, `logLevel` properties. Validation: host non-empty ≤253 chars, port 1024–65535, rate 1–1000 WPM, log level must be recognized. `-h`/`-V` call `exit()` directly.
+Custom argument parser replacing GNU argp (which requires Homebrew on macOS). Supports `-H VALUE`, `--host VALUE`, `--host=VALUE` forms. Returns `CommandLineArguments` object with `host`, `port`, `rate`, `logLevel` properties. Validation: host non-empty ≤253 chars, port 1024–65535, rate 1–1000 WPM **and not NaN** (`rate != rate` IEEE 754 check), log level must be recognized. `-h`/`-V` call `exit()` directly.
 
 ### `log.h/.m`
 
-Thread-safe leveled logger. Levels: `off`(0) through `trace`(6). All `LOG_*` calls go through `+[Logger record:file:line:func:newLine:fmt:]` which acquires `@synchronized(self)` on the Logger class. Output to stderr via `NSFileHandle`. ANSI color auto-detected via `isatty(fileno(stderr))`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION` (file:line:func), `LOG_SHOW_TIME_STAMP` (HH:MM:SS.uuuuuu).
+Thread-safe leveled logger. Levels: `off`(0) through `trace`(6). All `LOG_*` calls go through `+[Logger record:file:line:func:newLine:fmt:]` which acquires `@synchronized(self)` on the Logger class. The `_initialized` check is **inside** `@synchronized` to avoid a data race. Output to stderr via `NSFileHandle`. ANSI color auto-detected via `isatty(fileno(stderr))`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION` (file:line:func), `LOG_SHOW_TIME_STAMP` (HH:MM:SS.uuuuuu). `logErrno` uses `@synchronized` and prints errno number only (avoids thread-unsafe `strerror()`).
 
 ### `json_writer.h/.m`
 
@@ -123,17 +131,25 @@ Thin wrapper around `NSJSONSerialization`. Single class method: `+[JSONWriter se
 
 ### `http_parse.h/.m`
 
-HTTP request parsing. `+[HttpParse recvUntilHeadersDoneWithFD:totalLen:headerEnd:]` reads from socket via `recv()` in a loop, appends to `NSMutableData`, scans for `\r\n\r\n` via `rangeOfData:`. Returns raw buffer + headerEnd offset. `+[HttpParse parseHeadWithData:headerEnd:]` parses request line ("METHOD PATH VERSION") and headers into `HttpRequest` object. Limits: 64 KB max headers, 32 max headers, 64-byte max header name, 256-byte max header value.
+HTTP request parsing. `+[HttpParse recvUntilHeadersDoneWithFD:totalLen:headerEnd:]` reads from socket via `recv()` in a loop, appends to `NSMutableData`, scans for `\r\n\r\n` via `rangeOfData:`. Returns raw buffer + byte-based headerEnd offset. `+[HttpParse parseHeadWithData:headerEnd:]` **finds `\r\n\r\n` in NSString character space** (not using the byte offset) — safe for non-ASCII header values where byte offset ≠ character offset. Parses request line ("METHOD PATH VERSION") and headers into `HttpRequest` object. Limits: 64 KB max headers, 32 max headers, 64-byte max header name, 256-byte max header value.
 
 ### `http_response.h/.m`
 
-HTTP response writing. `HttpRequest (Headers)` category adds case-insensitive `headerWithName:`. `+[HttpResponse sendWithFD:statusCode:statusText:contentType:body:]` writes complete response with `Content-Length` and `Connection: close`. `+[HttpResponse beginChunkedWithFD:contentType:]` sends chunked headers. `+[HttpResponse writeChunkWithFD:data:]` sends hex-size-prefixed chunks. `+[HttpResponse endChunksWithFD:]` sends terminating `0\r\n\r\n`. `+[HttpResponse sendAll:data:]` handles short writes via `send()` loop.
+HTTP response writing. `HttpRequest (Headers)` category adds case-insensitive `headerWithName:`. `+[HttpResponse sendAll:data:]` sends all bytes handling short writes via `send()` loop with `EINTR` retry — returns `BOOL`. `+[HttpResponse sendWithFD:statusCode:statusText:contentType:body:]` writes complete response with `Content-Length` and `Connection: close` using `sendAll`. `+[HttpResponse beginChunkedWithFD:contentType:]` **returns `BOOL`** (NO on client disconnect). `+[HttpResponse writeChunkWithFD:data:]` sends hex-size-prefixed chunks using `sendAll`. `+[HttpResponse endChunksWithFD:]` sends terminating `0\r\n\r\n` using `sendAll`.
 
 ### `http_server.h/.m`
 
-Defines `HttpHeader`, `HttpRequest`, `ServerConfig` data types. `+[HttpServer runWithConfig:]` creates TCP socket, binds, listens (backlog=16), loops forever in `accept()`. Each connection spawns an NSThread block that calls `+[HttpServer handleConnectionWithFD:config:]`. Connection handler: extracts client IP via `getpeername`/`inet_ntop`, reads headers via `HttpParse`, reads body (validates `Content-Length`, rejects >1 MB, rejects truncated), dispatches by method+path to route handlers.
+Defines `HttpHeader`, `HttpRequest`, `ServerConfig` data types. `+[HttpServer runWithConfig:]` creates TCP socket, validates `setsockopt(SO_REUSEADDR)` return, binds, listens (backlog=16), loops forever in `accept()`. Each connection is **throttled** — waits if ≥64 concurrent threads, then spawns NSThread block. Thread counter uses `NSCondition` for push/pull signaling.
 
-Constants: `kRecvChunk` (4096), `kRecvMaxBodyBytes` (1 MB), `kMaxConcurrentThreads` (64), `kRecvTimeoutSeconds` (30). Thread counter uses `NSCondition` for throttling.
+Connection handler (`handleConnectionWithFD:config:`):
+1. Sets `SO_RCVTIMEO` (30s) on client socket
+2. Extracts client IP via `getpeername`/`inet_ntop`
+3. Reads headers via `HttpParse`
+4. **Validates `Content-Length`** with `NSScanner` (rejects non-numeric, negative)
+5. Reads body, **rejects truncated** (short recv) and oversized (>1 MB)
+6. Dispatches by method+path to route handlers
+
+Constants: `kRecvChunk` (4096), `kRecvMaxBodyBytes` (1 MB), `kMaxConcurrentThreads` (64), `kRecvTimeoutSeconds` (30).
 
 ### `speech_bridge.h/.m`
 
@@ -141,20 +157,24 @@ Global engine state: `g_engine_lock` (NSLock), `g_synth` (NSSpeechSynthesizer), 
 
 `VerbatimSpeechDelegate` implements `NSSpeechSynthesizerDelegate`:
 
-- `willSpeakWord:ofString:` — acquires engine lock, checks `sender != g_synth` (stray callback guard), pushes `{"event":"word","start":N,"length":N}`
-- `didFinishSpeaking:` — acquires engine lock, checks `sender != g_synth`, pushes `{"event":"finished","completed":bool}`, clears global state
+- `willSpeakWord:ofString:` — acquires engine lock, checks `sender != g_synth` (stray callback guard), **pushes event while still holding lock**, releases lock
+- `didFinishSpeaking:` — acquires engine lock, checks `sender != g_synth`, **pushes terminal event while holding lock**, clears global state, releases lock
+
+`speakWithSession:text:rate:voiceName:` — acquires lock, resolves voice, creates synth, updates globals, **pushes "started" while holding lock**, releases lock, interrupts previous, starts speaking.
+
+`stop` — acquires lock, saves session, clears globals, **pushes terminal event while holding lock**, releases lock, stops synth.
 
 Lock ordering: `g_engine_lock` → queue `NSCondition`. Consistent everywhere, no deadlock.
 
 ### `verbatim_event_queue.h/.m`
 
-Two classes: `VerbatimEventQueue` (internal, owns the queue) and `VerbatimSession` (public wrapper). `VerbatimEventQueue` has `NSCondition *condition`, `NSMutableArray<NSString *> *lines`, `BOOL done`. `pushEvent:terminal:` acquires lock, appends, signals, releases. `nextEvent` acquires lock, waits while empty && !done, pops front, releases. 30-second timeout on `nextEvent` prevents indefinite blocking.
+Two classes: `VerbatimEventQueue` (internal, owns the queue) and `VerbatimSession` (public wrapper). `VerbatimEventQueue` has `NSCondition *condition`, `NSMutableArray<NSString *> *lines`, `BOOL done`. `pushEvent:terminal:` acquires lock, appends, signals, releases. `nextEvent` acquires lock, waits while empty && !done, pops front, releases. **30-second timeout** on `nextEvent` — if triggered, sets `done = YES` to prevent re-entry on subsequent calls.
 
 Stream lifecycle: empty queue → "started" event → "word" events → "finished" event (terminal) → `nextEvent` returns nil.
 
 ### `voices.h/.m`
 
-Runs `/usr/bin/say -v '?'` via `NSTask` + `NSPipe`. Parses output with regex `^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#` into `VoiceInfo` objects (name + language). No caching — caching is in `routes.m` via `dispatch_once`.
+Runs `/usr/bin/say -v '?'` via `NSTask` + `NSPipe`. **Reads stdout and drains stderr BEFORE `waitUntilExit`** to prevent pipe-buffer deadlock (if `say` writes >64KB to stdout and nobody reads, it blocks on write; `waitUntilExit` then blocks forever). Parses output with regex `^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#` into `VoiceInfo` objects (name + language). No caching — caching is in `routes.m` via `dispatch_once`.
 
 ### `route_helpers.h/.m`
 
@@ -162,7 +182,7 @@ Runs `/usr/bin/say -v '?'` via `NSTask` + `NSPipe`. Parses output with regex `^(
 
 ### `route_speak.h/.m`
 
-POST / handler (Routes category). Validates body non-empty, parses `TTS-Voice`/`TTS-Speed`/`ndjson` headers, maps speed to rate, begins chunked response if ndjson, creates `VerbatimSession`, calls `[SpeechBridge speakWithSession:...]`, loops `[session nextEvent]` writing chunks. Stream timeout: estimated speaking time × 3 + 30s (minimum 60s). Non-ndjson path drains events silently, returns `{"status":"done"}`.
+POST / handler (Routes category). Validates body non-empty, parses `TTS-Voice`/`TTS-Speed`/`ndjson` headers, maps speed to rate, begins chunked response if ndjson (**checks return value — aborts on failure**), creates `VerbatimSession`, calls `[SpeechBridge speakWithSession:...]`, loops `[session nextEvent]` writing chunks via `sendAll`. **Stream timeout**: estimated speaking time × 3 + 30s (minimum 60s) — breaks loop if exceeded. Non-ndjson path drains events silently, returns `{"status":"done"}`.
 
 ### `routes.h/.m`
 
@@ -175,6 +195,7 @@ Simple endpoint handlers: `+stopWithFD:request:clientIP:` (calls `[SpeechBridge 
 1. Client sends raw UTF-8 text in `POST /` body
 2. Body stored as `NSString` in `HttpRequest.body`
 3. Validated for non-empty/non-whitespace
+4. Truncated bodies rejected (Content-Length mismatch)
 
 ### Voice/speed configuration
 
@@ -185,24 +206,28 @@ Simple endpoint handlers: `+stopWithFD:request:clientIP:` (calls `[SpeechBridge 
 ### Event production
 
 1. `NSSpeechSynthesizer` delegate callbacks fire on main thread
-2. `willSpeakWord:ofString:` builds `{"event":"word","start":N,"length":N}` JSON string
-3. `didFinishSpeaking:` builds `{"event":"finished","completed":bool}` JSON string
+2. `willSpeakWord:ofString:` builds `{"event":"word","start":N,"length":N}` — **pushed inside `g_engine_lock`**
+3. `didFinishSpeaking:` builds `{"event":"finished","completed":bool}` — **pushed inside `g_engine_lock`**
 4. Both push to `VerbatimSession`'s `VerbatimEventQueue` via `pushEvent:terminal:`
 
 ### Event consumption
 
 1. Connection thread calls `[session nextEvent]` in a loop
 2. `nextEvent` blocks on `NSCondition` until event available or 30s timeout
-3. Returns NDJSON string or nil (after terminal event consumed)
-4. Connection thread writes each event as a chunked HTTP response chunk
+3. On timeout: sets `done = YES`, returns nil
+4. Returns NDJSON string or nil (after terminal event consumed)
+5. Connection thread writes each event as a chunked HTTP response chunk via `sendAll`
+6. Overall stream deadline checked each iteration (3× estimated speech time + 30s)
 
 ### Voice listing
 
 1. First `GET /voices` runs `say -v '?'` via `NSTask`
-2. Output parsed into `VoiceInfo` objects via regex
-3. Serialized to JSON via `[JSONWriter serialize:]`
-4. Raw `NSData` cached in `g_voices_json` via `dispatch_once`
-5. Subsequent requests send cached bytes directly
+2. stdout read **before** `waitUntilExit` (deadlock prevention)
+3. stderr drained to prevent child blocking on error output
+4. Output parsed into `VoiceInfo` objects via regex
+5. Serialized to JSON via `[JSONWriter serialize:]`
+6. Raw `NSData` cached in `g_voices_json` via `dispatch_once`
+7. Subsequent requests send cached bytes directly
 
 ## Internal APIs
 
@@ -220,7 +245,7 @@ Simple endpoint handlers: `+stopWithFD:request:clientIP:` (calls `[SpeechBridge 
 ### VerbatimSession (verbatim_event_queue.h)
 
 ```objc
-- (nullable NSString *)nextEvent;              // blocking pull
+- (nullable NSString *)nextEvent;              // blocking pull (30s timeout)
 - (void)pushEvent:(NSString *)line terminal:(BOOL)terminal;  // push + signal
 ```
 
@@ -270,12 +295,12 @@ Simple endpoint handlers: `+stopWithFD:request:clientIP:` (calls `[SpeechBridge 
 
 All configuration is via CLI flags (no config file, no env vars):
 
-| Flag          | Property   | Default     | Validation                |
-| ------------- | ---------- | ----------- | ------------------------- |
-| `--host`      | `host`     | `127.0.0.1` | Non-empty, ≤253 chars     |
-| `--port`      | `port`     | `5959`      | 1024–65535                |
-| `--rate`      | `rate`     | `175`       | 1–1000 WPM, not NaN       |
-| `--log-level` | `logLevel` | `info`      | Must be recognized string |
+| Flag          | Property   | Default     | Validation                       |
+| ------------- | ---------- | ----------- | -------------------------------- |
+| `--host`      | `host`     | `127.0.0.1` | Non-empty, ≤253 chars            |
+| `--port`      | `port`     | `5959`      | 1024–65535                       |
+| `--rate`      | `rate`     | `175`       | 1–1000 WPM, not NaN              |
+| `--log-level` | `logLevel` | `info`      | off\|fatal\|error\|warn\|info\|debug\|trace |
 
 `ServerConfig` is heap-allocated in `main.m` and passed to the HTTP server thread.
 
@@ -285,6 +310,7 @@ All configuration is via CLI flags (no config file, no env vars):
 2. Each `.m` compiled to `build/src/*.o` via `$(CC) $(MFLAGS) -c $< -o $@`
 3. All `.o` files linked into `verbatimd` via `$(CC) $(LDFLAGS) -o $@ $(OUT) $(LDLIBS)`
 4. No dependency tracking — `make clean` required after header changes
+5. GitHub Actions: `.github/workflows/release.yml` builds on release creation, uploads `verbatimd-macos-arm64` as release artifact
 
 ## Runtime Model
 
@@ -298,34 +324,52 @@ All configuration is via CLI flags (no config file, no env vars):
 
 ### Synchronization primitives
 
-| Primitive                             | Purpose                         | Lock ordering   |
-| ------------------------------------- | ------------------------------- | --------------- |
-| `@synchronized(self)` on Logger class | Serialize log output            | Lowest priority |
-| `NSLock g_engine_lock`                | Guard speech engine state       | Acquired first  |
-| `NSCondition` in VerbatimEventQueue   | Producer/consumer event queue   | Acquired second |
-| `NSCondition g_threadCond`            | Throttle concurrent connections | Independent     |
+| Primitive                             | Purpose                         | Lock ordering     |
+| ------------------------------------- | ------------------------------- | ----------------- |
+| `@synchronized(self)` on Logger class | Serialize log output            | Lowest priority   |
+| `NSLock g_engine_lock`                | Guard speech engine state       | Acquired first    |
+| `NSCondition` in VerbatimEventQueue   | Producer/consumer event queue   | Acquired second   |
+| `NSCondition g_threadCond`            | Throttle concurrent connections | Independent       |
+
+Lock ordering is strictly enforced: `g_engine_lock` → `VerbatimEventQueue.condition`. No thread ever acquires them in reverse order. The HTTP server thread's `g_threadCond` is independent (never held alongside `g_engine_lock`).
 
 ### Networking
 
-- TCP socket, IPv4, `SO_REUSEADDR`
+- TCP socket, IPv4, `SO_REUSEADDR` (return value checked)
 - `listen(16)` backlog
 - `accept()` loop, one `NSThread` per connection
-- `SO_RCVTIMEO` 30s on client sockets
-- `SIGPIPE` ignored — `EPIPE` handled at `send()` call site
+- `SO_RCVTIMEO` 30s on client sockets (slowloris mitigation)
+- Max 64 concurrent connection threads (`NSCondition` throttling)
+- `SIGPIPE` ignored — `EPIPE` handled at `send()` call site via `sendAll`
 - No HTTP keep-alive (`Connection: close` always)
+- Short writes handled by `sendAll:data:` loop with `EINTR` retry
+
+### DoS protections
+
+| Protection              | Implementation                                     |
+| ----------------------- | -------------------------------------------------- |
+| Slowloris               | `SO_RCVTIMEO` 30s on client sockets                |
+| Thread exhaustion       | Max 64 concurrent threads, `NSCondition` throttle  |
+| Oversized bodies        | `Content-Length` > 1 MB rejected immediately        |
+| Malformed Content-Length | Non-numeric/negative values rejected                |
+| Truncated bodies        | Short recv (< Content-Length) rejected              |
+| NDJSON stream hang      | Overall deadline (3× estimated + 30s, min 60s)     |
+| Event queue stall       | `nextEvent` 30s timeout, sets `done = YES`          |
 
 ## Error Handling
 
-- **POSIX errors:** `LOG_PERROR` includes `strerror(errno)`, logged at ERROR level
+- **POSIX errors:** `logErrno` saves errno immediately, logs number via `@synchronized` (no `strerror()`)
 - **HTTP errors:** JSON responses via `[RouteHelpers sendJSONErrorWithFD:...]` (400, 404, 500)
 - **Speech errors:** Terminal events pushed to session queue: `{"event":"error","message":"..."}`
-- **Socket errors:** `send()` failures logged as WARN, connection closed (non-fatal)
-- **Body truncation:** Requests with mismatched `Content-Length` rejected
-- **Oversized bodies:** `Content-Length` > 1 MB rejected immediately
+- **Socket errors:** `sendAll` returns BOOL, failures logged as WARN, connection closed (non-fatal)
+- **Client disconnect:** `beginChunkedWithFD:` returns NO, caller aborts stream
+- **Body truncation:** Requests with mismatched `Content-Length` rejected (400)
+- **Oversized bodies:** `Content-Length` > 1 MB rejected immediately (400)
+- **Malformed Content-Length:** Non-numeric values rejected (400)
 
 ## Logging
 
-All output to stderr via `NSFileHandle`. Thread-safe via `@synchronized`. ANSI color auto-detected via `isatty`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION`, `LOG_SHOW_TIME_STAMP`.
+All output to stderr via `NSFileHandle`. Thread-safe via `@synchronized`. `_initialized` check inside lock. ANSI color auto-detected via `isatty`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION`, `LOG_SHOW_TIME_STAMP`. `logErrno` prints errno number only (avoids thread-unsafe `strerror()`).
 
 ## Memory Ownership
 
