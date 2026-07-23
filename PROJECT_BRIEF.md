@@ -1,472 +1,359 @@
-# verbatimd — Complete Codebase Reference for a New Contributor
+# PROJECT_BRIEF.md — Complete Codebase Reference
 
-> **Purpose**: This document gives a new contributor a complete, accurate mental model of the codebase in one read. No speculation — only what exists in the repository as of the current commit.
-
----
-
-## 1. Project Identity
-
-| Attribute        | Value                                                                                                                                                |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Name**         | verbatimd                                                                                                                                            |
-| **Language**     | Objective-C (100% .m files, compiled as `-std=c17 -fobjc-arc`)                                                                                       |
-| **Platform**     | macOS only (AppKit + Foundation — `NSSpeechSynthesizer` is an AppKit API)                                                                            |
-| **Dependencies** | Zero runtime deps. Build-time: Xcode Command Line Tools (Foundation, AppKit, pthread)                                                                |
-| **Binary**       | Single executable `./verbatimd` (~243 KB debug, stripped smaller)                                                                                    |
-| **License**      | MIT                                                                                                                                                  |
-| **Philosophy**   | _Do one thing well._ Speak text aloud and tell a client exactly which word is being spoken, live. No Swift runtime, no Node.js, no async frameworks. |
-
-**Not a framework.** Not a library. Not extensible at runtime. A single-purpose macOS TTS server that streams per-word timing events over HTTP.
+> For user-facing docs, see [README.md](README.md). For developer guide, see [DEV.md](DEV.md).
 
 ---
 
-## 2. High-Level Architecture
+## Project Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        main thread                                  │
-│  CommandLineArguments.parseArgc:argv:                               │
-│       ↓                                                            │
-│  Logger.init: → ServerConfig.alloc/init                            │
-│       ↓                                                            │
-│  [NSThread startWithBlock:] ───────────────────────────────────┐    │
-│       ↓                                                       │    │
-│  CFRunLoopRun()  [blocks forever — keeps NSSpeechSynthesizer  │    │
-│                   delegate callbacks alive]                    │    │
-└────────────────────────────────────────────────────────────────┼────┘
-                                                                 │
-                                                                 ▼
-                        ┌──────────────────────────────────────────┐
-                        │  HTTP server thread (NSThread block)     │
-                        │                                          │
-                        │  socket → bind → listen → accept loop │
-                        │       │                                  │
-                        │       ▼                                 │
-                        │  NSThread block per connection           │
-                        │  (blocks, no pthread_create/detach)      │
-                        └──────────┬───────────────────────────────┘
-                                   │
-                                   ▼
-                        ┌──────────────────────────────────────────────┐
-                        │  Connection thread (NSThread block)          │
-                        │                                              │
-                        │  [HttpParse recvUntilHeadersDoneWithFD:]     │
-                        │       ↓                                     │
-                        │  [HttpParse parseHeadWithData:]              │
-                        │       ↓                                     │
-                        │  Read body (Content-Length)                  │
-                        │       ↓                                     │
-                        │  Route dispatch:                             │
-                        │    POST /    → [Routes speakWithFD:...]     │
-                        │    POST /stop → [Routes stopWithFD:...]     │
-                        │    GET /status → [Routes statusWithFD:...]  │
-                        │    GET /voices → [Routes voicesWithFD:...]  │
-                        │       ↓                                     │
-                        │  close(fd)                                   │
-                        └──────────┬───────────────────────────────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────────────────────────────┐
-                        │  Speech engine (global, lock-guarded)       │
-                        │                                             │
-                        │  SpeechBridge.speakWithSession:             │
-                        │    → NSSpeechSynthesizer.startSpeaking     │
-                        │    → delegate willSpeakWord → push_event  │
-                        │    → delegate didFinishSpeaking → push    │
-                        │                                             │
-                        │  VerbatimSession.nextEvent                  │
-                        │    → NSCondition wait/signal queue         │
-                        │    → returns NDJSON string or nil          │
-                        └─────────────────────────────────────────────┘
+verbatimd is a local macOS TTS server. It speaks text aloud via `NSSpeechSynthesizer` and streams real-time per-word timing events as NDJSON over HTTP, enabling per-word highlighting as words are spoken.
+
+- **Language:** 100% Objective-C (`.m` files, compiled as `-std=c17 -fobjc-arc`)
+- **Platform:** macOS only (`NSSpeechSynthesizer` is an AppKit API)
+- **Dependencies:** Zero runtime deps. Build-time: Xcode Command Line Tools (Foundation, AppKit, pthread)
+- **Binary:** Single executable `./verbatimd`
+- **License:** MIT
+
+## Complete Architecture
+
+```mermaid
+graph TD
+    subgraph "Main thread"
+        A[main.m] -->|parse argv| B[CommandLineArguments]
+        A -->|start server thread| C[NSThread: HttpServer.runWithConfig:]
+        A -->|CFRunLoopRun forever| D[AppKit run loop]
+    end
+
+    subgraph "HTTP server thread"
+        C -->|socket/bind/listen| E[accept loop]
+        E -->|NSThread per connection| F[handleConnectionWithFD:config:]
+    end
+
+    subgraph "Connection thread"
+        F -->|recv| G[HttpParse]
+        G -->|HttpRequest| H{route dispatch}
+        H -->|POST /| I[route_speak]
+        H -->|POST /stop| J[Routes.stop]
+        H -->|GET /status| K[Routes.status]
+        H -->|GET /voices| L[Routes.voices]
+        H -->|unknown| M[Routes.notFound]
+    end
+
+    subgraph "Speech engine"
+        I -->|create session| N[VerbatimSession]
+        I -->|speak| O[SpeechBridge]
+        O -->|create synthesizer| P[NSSpeechSynthesizer]
+        P -->|willSpeakWord| Q[VerbatimSpeechDelegate]
+        P -->|didFinishSpeaking| Q
+        Q -->|push events| N
+        I -->|pull events| N
+        N -->|write chunks| R[HttpResponse]
+    end
 ```
 
-**Key invariants:**
+### Key invariants
 
-- Main thread runs `CFRunLoopRun()` — this is load-bearing. Without it, `NSSpeechSynthesizer` delegate callbacks (`willSpeakWord`) never fire.
-- HTTP server runs on its own background thread via `[HttpServer runWithConfig:]`, spawns one NSThread block per connection.
+- Main thread runs `CFRunLoopRun()` — this is load-bearing. Without it, `NSSpeechSynthesizer` delegate callbacks never fire.
+- HTTP server runs on its own background thread, spawns one NSThread block per connection.
 - Speech engine is a single global `NSSpeechSynthesizer` guarded by `NSLock`. One utterance at a time.
 - `sender != g_synth` identity check prevents stray callbacks from a superseded synthesizer.
-- Event queue uses `NSCondition` for push-from-delegate-thread / blocking-pull-from-HTTP-thread.
+- Event queue uses `NSCondition` for push-from-delegate / blocking-pull-from-HTTP.
 
----
+## Execution Flow
 
-## 3. Source Tree
+### Startup (`main.m`)
 
-```
-src/
-├── project_config.h           # VERSION, BINARY_NAME, HOMEPAGE_URL, SHORT_DESC constants
-├── command_line.h/.m          # Native ObjC argv parsing (replaces argp, no external deps)
-├── log.h/.m                   # Thread-safe leveled logging with ANSI colour, timestamps
-├── json_writer.h/.m           # JSON serialization via NSJSONSerialization ([JSONWriter serialize:])
-├── http_parse.h/.m            # HTTP request parsing (recv + parse head + headers)
-├── http_response.h/.m         # HTTP response writing (plain + chunked streaming)
-├── http_server.h/.m           # Minimal hand-rolled HTTP/1.1 server (thread-per-connection)
-├── voices.h/.m                # GET /voices — shells out to `say -v '?'` via NSTask, cached
-├── route_helpers.h/.m         # Shared route utilities (speed mapping, JSON response/error helpers)
-├── route_speak.h/.m           # POST / handler (Routes (Speak) category, NDJSON streaming)
-├── speech_bridge.h/.m         # NSSpeechSynthesizer wrapper (global engine, delegate callbacks)
-├── verbatim_event_queue.h/.m  # Thread-safe event queue (VerbatimSession + VerbatimEventQueue)
-├── routes.h/.m                # Remaining HTTP endpoints (stop, status, voices, 404)
-└── main.m                     # Entry point: parses args, starts server, runs CFRunLoop
-```
+1. `signal(SIGPIPE, SIG_IGN)` — prevent client disconnect from killing the server
+2. `[Logger init:LogLevelInfo]` — initialize logger at default level
+3. `[CommandLineArguments parseArgc:argv:]` — parse CLI args (returns nil on error or `-h`/`-V`)
+4. `[args resolveLogLevel:&level]` — convert string to `LogLevel` enum
+5. `[Logger init:level]` — reinitialize at user-specified level
+6. Build `ServerConfig` (heap-allocated, outlives main())
+7. `[args validateWithError:]` — validate host (non-empty, ≤253 chars), port (1024–65535), rate (1–1000 WPM)
+8. `[NSThread startWithBlock:]` — launch HTTP server thread
+9. `CFRunLoopRun()` — block main thread forever (required for speech callbacks)
 
-**No subdirectories.** Flat `src/` with `.h/.m` pairs. Makefile uses `$(wildcard src/*.m)`.
+### Request lifecycle (POST /)
 
----
+1. `accept()` → client_fd
+2. NSThread block spawned for this connection
+3. Connection thread: `[HttpParse recvUntilHeadersDoneWithFD:...]` → raw data
+4. `[HttpParse parseHeadWithData:]` → `HttpRequest*` (method, path, headers)
+5. Read body: `Content-Length` → `NSMutableData` → `NSString`
+6. Route dispatch: `[Routes speakWithFD:fd request:req config:config clientIP:clientIP]`
+7. Validate body non-empty, read `TTS-Voice`/`TTS-Speed`/`ndjson` headers
+8. `[RouteHelpers mapSpeedToRate:]` → WPM
+9. If ndjson: `[HttpResponse beginChunkedWithFD:contentType:@"application/x-ndjson"]`
+10. `VerbatimSession *session = [[VerbatimSession alloc] init]`
+11. `[SpeechBridge speakWithSession:session text:body rate:rate voiceName:voice]`
+12. Loop `[session nextEvent]` → write NDJSON chunks → end chunks when nil returned
 
-## 4. Module Deep Dive
+### Speech engine flow
 
-### 4.1 `main.m` — Entry & CLI
+1. `[SpeechBridge speakWithSession:text:rate:voiceName:]` acquires `g_engine_lock`
+2. Saves references to previous session/synth
+3. Resolves voice name via `resolveVoiceName:` (case-insensitive match against `NSVoiceName` attribute)
+4. Creates new `NSSpeechSynthesizer`, assigns delegate + rate
+5. Updates global state (`g_synth`, `g_delegate`, `g_current_session`)
+6. Pushes `{"event":"started"}` while holding lock
+7. Releases lock
+8. Interrupts previous synth (if any) — sends `finished` event with `completed:false`
+9. Calls `[synth startSpeakingString:text]`
+10. Delegate callbacks fire on main thread's run loop:
+    - `willSpeakWord:ofString:` → pushes `{"event":"word","start":N,"length":N}`
+    - `didFinishSpeaking:` → pushes `{"event":"finished","completed":bool}`, clears global state
 
-- `[CommandLineArguments parseArgc:argv:]` → fills `args` (host, port, rate, logLevel).
-- Returns nil on parse error OR `-h`/`-V` (those call `exit()` directly).
-- `[args resolveLogLevel:&level]` → converts string to `LogLevel` enum.
-- `[Logger init:level]` → must be called before any `LOG_*` macro.
-- `ServerConfig` heap-allocated (lives as long as server thread).
-- `[NSThread startWithBlock:]` → launches background thread, passes config.
-- Main thread enters `CFRunLoopRun()` — blocks forever, keeps speech callbacks alive.
+## Source Tree Walkthrough
 
-### 4.2 `http_server.h/.m` — HTTP Server
+### `project_config.h`
 
-- **Classes defined in header**:
-  - `HttpHeader` — simple name/value pair (both `NSString *`)
-  - `HttpRequest` — holds method, path, headers (`NSMutableArray<HttpHeader *>`), body (`NSString *`)
-  - `ServerConfig` — holds host, port, defaultRate, logLevel (all properties)
+Compile-time constants: `kVerbatim` (product name), `kMainBinary` (binary name), `kProjectVersion` ("1.0.0"), `kProjectHomepageURL`, `kProjectShortDesc`, `kAuthMessage`. All `static const` — no linker conflicts.
 
-- **`[HttpServer runWithConfig:]`** — class method. Socket setup (`socket()` → `SO_REUSEADDR` → `inet_pton()` → `bind()` → `listen(16)`), then blocking `accept()` loop. Each connection spawns an NSThread block.
+### `command_line.h/.m`
 
-- **Per-connection NSThread block**:
-  1. `[HttpParse recvUntilHeadersDoneWithFD:...]` — reads into growing `NSMutableData` until `\r\n\r\n`.
-  2. `[HttpParse parseHeadWithData:...]` — returns `HttpRequest *` object.
-  3. Body read based on `Content-Length` → `NSMutableData` → `NSString`.
-  4. Route dispatch via `[Routes speakWithFD:...]` etc.
-  5. `close(fd)`.
+Custom argument parser replacing GNU argp (which requires Homebrew on macOS). Supports `-H VALUE`, `--host VALUE`, `--host=VALUE` forms. Returns `CommandLineArguments` object with `host`, `port`, `rate`, `logLevel` properties. Validation: host non-empty ≤253 chars, port 1024–65535, rate 1–1000 WPM, log level must be recognized. `-h`/`-V` call `exit()` directly.
 
-- **Route dispatch** — C `if/else` chain matching method + path. No router abstraction.
+### `log.h/.m`
 
-### 4.3 `http_parse.h/.m` — HTTP Request Parsing
+Thread-safe leveled logger. Levels: `off`(0) through `trace`(6). All `LOG_*` calls go through `+[Logger record:file:line:func:newLine:fmt:]` which acquires `@synchronized(self)` on the Logger class. Output to stderr via `NSFileHandle`. ANSI color auto-detected via `isatty(fileno(stderr))`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION` (file:line:func), `LOG_SHOW_TIME_STAMP` (HH:MM:SS.uuuuuu).
 
-- **`[HttpParse recvUntilHeadersDoneWithFD:...]`** — reads from socket via `recv()`, appends to mutable data buffer, scans for `\r\n\r\n` delimiter. Returns the raw data containing headers (caller extracts body from remaining buffer).
+### `json_writer.h/.m`
 
-- **`[HttpParse parseHeadWithData:...]`** — parses the raw header data into an `HttpRequest` object. Splits on `\r\n`, first line → method + path, remaining lines → `HttpHeader` objects (case-insensitive name, value).
+Thin wrapper around `NSJSONSerialization`. Single class method: `+[JSONWriter serialize:]` → `NSData*`. Validates with `isValidJSONObject:` before serializing. No pretty-printing (compact output for NDJSON). No JSON parsing — this project only builds JSON.
 
-- **`kHTTPMaxHeaders`, `kHTTPMaxBody`, `kHTTPMaxLine`** — static constants defining limits (defined in `.m`, not header).
+### `http_parse.h/.m`
 
-### 4.4 `http_response.h/.m` — HTTP Response Writing
+HTTP request parsing. `+[HttpParse recvUntilHeadersDoneWithFD:totalLen:headerEnd:]` reads from socket via `recv()` in a loop, appends to `NSMutableData`, scans for `\r\n\r\n` via `rangeOfData:`. Returns raw buffer + headerEnd offset. `+[HttpParse parseHeadWithData:headerEnd:]` parses request line ("METHOD PATH VERSION") and headers into `HttpRequest` object. Limits: 64 KB max headers, 32 max headers, 64-byte max header name, 256-byte max header value.
 
-- **`HttpRequest (Headers)` category** — case-insensitive header lookup: `[req headerWithName:@"TTS-Voice"]`.
+### `http_response.h/.m`
 
-- **`[HttpResponse sendWithFD:statusCode:statusText:contentType:body:]`** — writes a complete HTTP response with `Content-Length`. Two `send()` calls: headers then body.
+HTTP response writing. `HttpRequest (Headers)` category adds case-insensitive `headerWithName:`. `+[HttpResponse sendWithFD:statusCode:statusText:contentType:body:]` writes complete response with `Content-Length` and `Connection: close`. `+[HttpResponse beginChunkedWithFD:contentType:]` sends chunked headers. `+[HttpResponse writeChunkWithFD:data:]` sends hex-size-prefixed chunks. `+[HttpResponse endChunksWithFD:]` sends terminating `0\r\n\r\n`. `+[HttpResponse sendAll:data:]` handles short writes via `send()` loop.
 
-- **`[HttpResponse beginChunkedWithFD:contentType:]`** — sends chunked response headers (`Transfer-Encoding: chunked`).
+### `http_server.h/.m`
 
-- **`[HttpResponse writeChunkWithFD:data:]`** — sends a single chunk in hex-size-prefixed format (`<hex>\r\n<data>\r\n`).
+Defines `HttpHeader`, `HttpRequest`, `ServerConfig` data types. `+[HttpServer runWithConfig:]` creates TCP socket, binds, listens (backlog=16), loops forever in `accept()`. Each connection spawns an NSThread block that calls `+[HttpServer handleConnectionWithFD:config:]`. Connection handler: extracts client IP via `getpeername`/`inet_ntop`, reads headers via `HttpParse`, reads body (validates `Content-Length`, rejects >1 MB, rejects truncated), dispatches by method+path to route handlers.
 
-- **`[HttpResponse endChunksWithFD:]`** — sends the terminating `0\r\n\r\n`.
+Constants: `kRecvChunk` (4096), `kRecvMaxBodyBytes` (1 MB), `kMaxConcurrentThreads` (64), `kRecvTimeoutSeconds` (30). Thread counter uses `NSCondition` for throttling.
 
-### 4.5 `speech_bridge.h/.m` — Speech Engine
+### `speech_bridge.h/.m`
 
-- **Global state** (all guarded by `g_engine_lock` `NSLock`):
-  - `g_synth` — single `NSSpeechSynthesizer` instance
-  - `g_delegate` — `VerbatimSpeechDelegate` (keeps it alive)
-  - `g_current_session` — the active `VerbatimSession`
+Global engine state: `g_engine_lock` (NSLock), `g_synth` (NSSpeechSynthesizer), `g_delegate` (VerbatimSpeechDelegate), `g_current_session` (VerbatimSession). `+initialize` creates the lock. `+resolveVoiceName:` performs case-insensitive match through `[NSSpeechSynthesizer availableVoices]`'s `NSVoiceName` attribute.
 
-- **`+initialize`** — called once by runtime. Creates `g_engine_lock`, `g_delegate`, `g_synth`. Sets delegate on synth. This avoids the `dispatch_once` / static initializer pattern.
+`VerbatimSpeechDelegate` implements `NSSpeechSynthesizerDelegate`:
 
-- **`SpeechBridge`** class methods:
-  - `+speakWithSession:text:rate:voiceName:` — interrupts previous, resolves voice, creates new synth, starts speaking.
-  - `+stop` — stops current utterance, notifies session with `finished` event.
-  - `+isSpeaking` — returns whether `g_current_session != nil`.
+- `willSpeakWord:ofString:` — acquires engine lock, checks `sender != g_synth` (stray callback guard), pushes `{"event":"word","start":N,"length":N}`
+- `didFinishSpeaking:` — acquires engine lock, checks `sender != g_synth`, pushes `{"event":"finished","completed":bool}`, clears global state
 
-- **`+resolveVoiceName:`** — case-insensitive match against `[NSSpeechSynthesizer availableVoices]`'s `NSVoiceName` attribute.
+Lock ordering: `g_engine_lock` → queue `NSCondition`. Consistent everywhere, no deadlock.
 
-- **`VerbatimSpeechDelegate`**:
-  - `willSpeakWord:ofString:` — pushes `{"event":"word","start":N,"length":N}` to session queue.
-  - `didFinishSpeaking:` — pushes `{"event":"finished","completed":bool}`, clears global state.
-  - **Sender identity check**: `sender != g_synth` → ignore (stray callback from superseded synth).
+### `verbatim_event_queue.h/.m`
 
-### 4.6 `verbatim_event_queue.h/.m` — Event Queue
+Two classes: `VerbatimEventQueue` (internal, owns the queue) and `VerbatimSession` (public wrapper). `VerbatimEventQueue` has `NSCondition *condition`, `NSMutableArray<NSString *> *lines`, `BOOL done`. `pushEvent:terminal:` acquires lock, appends, signals, releases. `nextEvent` acquires lock, waits while empty && !done, pops front, releases. 30-second timeout on `nextEvent` prevents indefinite blocking.
 
-- **`VerbatimSession`** — simple object that owns a `VerbatimEventQueue`.
-  - `-nextEvent` blocks on NSCondition until event available, returns `NSString *` or `nil`.
+Stream lifecycle: empty queue → "started" event → "word" events → "finished" event (terminal) → `nextEvent` returns nil.
 
-- **`VerbatimEventQueue`** — the actual queue:
-  - `NSMutableArray<NSString *> *lines` — pending events
-  - `NSCondition *cond` — wait/signal synchronization
-  - `BOOL done` — terminal flag
+### `voices.h/.m`
 
-- **Queue flow**:
-  ```
-  push_event(session, line, terminal)
-    → lock → append to lines array → if terminal, set done → signal → unlock
+Runs `/usr/bin/say -v '?'` via `NSTask` + `NSPipe`. Parses output with regex `^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#` into `VoiceInfo` objects (name + language). No caching — caching is in `routes.m` via `dispatch_once`.
 
-  [session nextEvent]
-    → lock → wait while empty && !done → pop front → unlock → return line
-    → if done && empty → return nil
-  ```
+### `route_helpers.h/.m`
 
-### 4.7 `routes.h/.m` — HTTP Endpoints
+`NSString (RouteHelpers)` category: `isBlank` (empty or whitespace-only). `RouteHelpers` class: `+mapSpeedToRate:` (linear: 1→90 WPM, 10→360 WPM, clamped), `+sendJSONResponseWithFD:statusCode:statusText:object:` (serialize + send, falls back to 500 on failure), `+sendJSONErrorWithFD:statusCode:statusText:message:` (wraps in `{"error":"..."}`).
 
-All class methods on `Routes`:
+### `route_speak.h/.m`
 
-- **`+stopWithFD:request:clientIP:`** — calls `[SpeechBridge stop]`, returns `{"status":"stopped"}`.
-- **`+statusWithFD:request:clientIP:`** — returns `{"speaking": bool}`.
-- **`+voicesWithFD:request:clientIP:`** — calls `[Voices voicesList]`, returns JSON array. Caches final serialized JSON bytes via `dispatch_once`.
-- **`+notFoundWithFD:clientIP:`** — returns 404 JSON error.
+POST / handler (Routes category). Validates body non-empty, parses `TTS-Voice`/`TTS-Speed`/`ndjson` headers, maps speed to rate, begins chunked response if ndjson, creates `VerbatimSession`, calls `[SpeechBridge speakWithSession:...]`, loops `[session nextEvent]` writing chunks. Stream timeout: estimated speaking time × 3 + 30s (minimum 60s). Non-ndjson path drains events silently, returns `{"status":"done"}`.
 
-Route dispatch is in `http_server.m` (the NSThread block), not in `routes.m`.
+### `routes.h/.m`
 
-### 4.8 `route_helpers.h/.m` — Shared Route Utilities
+Simple endpoint handlers: `+stopWithFD:request:clientIP:` (calls `[SpeechBridge stop]`), `+statusWithFD:request:clientIP:` (returns speaking bool), `+voicesWithFD:request:clientIP:` (caches JSON via `dispatch_once`), `+notFoundWithFD:` (404 JSON error).
 
-- **`NSString (RouteHelpers)` category**:
-  - `-isBlank` — returns YES if string is empty or whitespace-only.
+## Data Flow
 
-- **`RouteHelpers`** class methods:
-  - `+mapSpeedToRate:` — maps TTS-Speed header (1–10) to WPM (90–360), linear.
-  - `+sendJSONResponseWithFD:statusCode:statusText:object:` — serializes and sends a complete JSON response. Falls back to 500 on serialization failure.
-  - `+sendJSONErrorWithFD:statusCode:statusText:message:` — convenience wrapper, wraps message in `{"error":"..."}`.
+### Text input
 
-### 4.9 `route_speak.h/.m` — POST / Handler
+1. Client sends raw UTF-8 text in `POST /` body
+2. Body stored as `NSString` in `HttpRequest.body`
+3. Validated for non-empty/non-whitespace
 
-- **`Routes (Speak)` category** — separated from `routes.m` because this handler is significantly more complex.
+### Voice/speed configuration
 
-- **`+speakWithFD:request:config:clientIP:`** — the main endpoint:
-  1. Validates body non-empty.
-  2. Reads `TTS-Voice`, `TTS-Speed`, `ndjson` headers.
-  3. Maps `TTS-Speed` (1–10) → WPM (90–360) via `[RouteHelpers mapSpeedToRate:]`.
-  4. If `ndjson=true`: begins chunked response via `[HttpResponse beginChunkedWithFD:]`.
-  5. Creates `VerbatimSession`, calls `[SpeechBridge speakWithSession:...]`.
-  6. Loops `[session nextEvent]` writing NDJSON chunks, or drains silently for non-ndjson.
+1. Headers `TTS-Voice`, `TTS-Speed` parsed from `HttpRequest.headers`
+2. `TTS-Speed` (1–10) mapped to WPM (90–360) via `[RouteHelpers mapSpeedToRate:]`
+3. `TTS-Voice` resolved to `NSSpeechSynthesizer` voice identifier via case-insensitive lookup
 
-### 4.10 `voices.h/.m` — Voice Listing
+### Event production
 
-- **`[Voices voicesList]`** — returns `NSArray *` (cached via `dispatch_once` in `routes.m`).
-- First call: `[[NSTask alloc] init]` with `/usr/bin/say -v '?'`, reads stdout via `NSPipe`.
-- Regex: `^(.+)[[:space:]]{2,}([A-Za-z_-]+)[[:space:]]+#` — matches lines like `"Albert              en_US    # Hello! ..."`.
-- Cache: final serialized JSON bytes (`NSData *`), stored in `routes.m` via `dispatch_once`.
+1. `NSSpeechSynthesizer` delegate callbacks fire on main thread
+2. `willSpeakWord:ofString:` builds `{"event":"word","start":N,"length":N}` JSON string
+3. `didFinishSpeaking:` builds `{"event":"finished","completed":bool}` JSON string
+4. Both push to `VerbatimSession`'s `VerbatimEventQueue` via `pushEvent:terminal:`
 
-### 4.11 `json_writer.h/.m` — JSON Serialization
+### Event consumption
 
-- Single class method: `[JSONWriter serialize:object]` → `NSData *` (UTF-8).
-- Wraps `NSJSONSerialization` — handles string escaping correctly.
-- No JSON parsing — this project only ever _builds_ JSON (POST body is raw text, not JSON).
+1. Connection thread calls `[session nextEvent]` in a loop
+2. `nextEvent` blocks on `NSCondition` until event available or 30s timeout
+3. Returns NDJSON string or nil (after terminal event consumed)
+4. Connection thread writes each event as a chunked HTTP response chunk
 
-### 4.12 `command_line.h/.m` — Argument Parsing
+### Voice listing
 
-- Custom implementation, no external library (replaced `argp` which is Homebrew-only on macOS).
-- Supports `-H VALUE`, `--host VALUE`, `--host=VALUE` forms.
-- Defaults: host `127.0.0.1`, port `5959`, rate `175`, log-level `info`.
-- `-h`/`--help` and `-V`/`--version` call `exit(0)` directly — never return to caller.
-- Argument validation: host (non-empty, max 253 chars), port (1024-65535), rate (1-1000 wpm).
+1. First `GET /voices` runs `say -v '?'` via `NSTask`
+2. Output parsed into `VoiceInfo` objects via regex
+3. Serialized to JSON via `[JSONWriter serialize:]`
+4. Raw `NSData` cached in `g_voices_json` via `dispatch_once`
+5. Subsequent requests send cached bytes directly
 
-### 4.13 `log.h/.m` — Thread-Safe Logger
+## Internal APIs
 
-- **Levels**: `off`(0), `fatal`(1), `error`(2), `warn`(3), `info`(4), `debug`(5), `trace`(6).
-- **Thread safety**: `@synchronized(self)` on every `LOG_*` call.
-- **ANSI colour**: auto-detected via `isatty(fileno(stderr))`.
-- **Compile-time features** (set via Makefile `O_` variables):
-  - `LOG_SHOW_SOURCE_LOCATION` — prepends `[file:line:func]`.
-  - `LOG_SHOW_TIME_STAMP` — prepends `[HH:MM:SS.ffffff]`.
-- **Macros**: `LOG_FATAL`, `LOG_ERROR`, `LOG_WARN`, `LOG_INFO`, `LOG_DEBUG`, `LOG_TRACE`, `LOG_PERROR` (adds `perror()`).
+### SpeechBridge (speech_bridge.h)
 
----
-
-## 5. Request Lifecycle (Happy Path: POST /)
-
-```
-1.  main thread: accept() → client_fd
-2.  NSThread block spawned for this connection
-3.  Connection thread:
-    a. [HttpParse recvUntilHeadersDoneWithFD:...] → raw data
-    b. [HttpParse parseHeadWithData:] → HttpRequest* (method, path, headers)
-    c. Read body: Content-Length → NSMutableData → NSString
-    d. Route dispatch: [Routes speakWithFD:fd request:req config:config clientIP:clientIP]
-4.  Routes.speakWithFD:
-    a. Validate body non-empty
-    b. Read headers: TTS-Voice, TTS-Speed, ndjson
-    c. [RouteHelpers mapSpeedToRate:] → WPM
-    d. If ndjson: [HttpResponse beginChunkedWithFD:contentType:@"application/x-ndjson"]
-    e. VerbatimSession *session = [[VerbatimSession alloc] init]
-    f. [SpeechBridge speakWithSession:session text:body rate:rate voiceName:voice]
-5.  SpeechBridge.speakWithSession:
-    a. Lock g_engine_lock
-    b. Interrupt previous session (push finished event, stopSpeaking)
-    c. Create NSSpeechSynthesizer, set delegate + rate
-    d. Store session as g_current_session
-    e. Unlock
-    f. [synth startSpeakingString:text]
-6.  NSSpeechSynthesizer calls delegate on main thread's run loop:
-    a. willSpeakWord → push {"event":"word","start":N,"length":N} to session queue
-    b. didFinishSpeaking → push {"event":"finished","completed":bool}, clear global state
-7.  HTTP thread: [session nextEvent] → blocks on NSCondition → returns event string
-8.  [HttpResponse writeChunkWithFD:fd data:lineData] → sends NDJSON line to client
-9.  Repeat 7–8 until nextEvent returns nil
-10. [HttpResponse endChunksWithFD:fd] → close(fd)
+```objc
++ (void)speakWithSession:(VerbatimSession *)session
+                    text:(NSString *)text
+                    rate:(float)rate
+               voiceName:(nullable NSString *)voiceName;
++ (void)stop;
++ (BOOL)isSpeaking;
 ```
 
----
+### VerbatimSession (verbatim_event_queue.h)
 
-## 6. Build System
-
-### `Makefile` (top-level)
-
-```make
-CC = clang
-CFLAGS = -Isrc -std=c17 -fobjc-arc -Wall -Wextra -Wpedantic \
-         -Wshadow -Wconversion -Wstrict-prototypes -Wmissing-prototypes
-LDFLAGS += -lpthread -framework Foundation -framework AppKit
+```objc
+- (nullable NSString *)nextEvent;              // blocking pull
+- (void)pushEvent:(NSString *)line terminal:(BOOL)terminal;  // push + signal
 ```
 
+### HttpResponse (http_response.h)
 
-```sh
-# Debug (ASan + UBSan):
-make debug
-# → -g3 -DDEBUG -DLOG_SHOW_SOURCE_LOCATION -DLOG_SHOW_TIME_STAMP
-# → -fsanitize=address -fsanitize=undefined -ffreestanding
-
-# Release:
-make            # -O3
-
-# Install:
-make install                          # /usr/local/bin/verbatimd
-make install PREFIX="$HOME/.local"    # ~/.local/bin/verbatimd
+```objc
++ (BOOL)sendAll:(int)fd data:(NSData *)data;
++ (void)sendWithFD:(int)fd statusCode:(int)statusCode statusText:(NSString *)statusText
+       contentType:(NSString *)contentType body:(NSData *)body;
++ (BOOL)beginChunkedWithFD:(int)fd contentType:(NSString *)contentType;
++ (void)writeChunkWithFD:(int)fd data:(NSData *)data;
++ (void)endChunksWithFD:(int)fd;
 ```
 
-### Build-time options (Makefile `O_` variables)
+### HttpParse (http_parse.h)
 
-| Variable                     | Default | Effect                                    |
-| ---------------------------- | ------- | ----------------------------------------- |
-| `O_DEBUG`                    | `0`     | Enable debug build (ASan, UBSan, -g3)     |
-| `O_LOG_SHOW_SOURCE_LOCATION` | `1`     | Prepend `[file:line:func]` to log output  |
-| `O_LOG_SHOW_TIME_STAMP`      | `1`     | Prepend `[HH:MM:SS.ffffff]` to log output |
-
-### No dependency tracking
-
-Headers not in Makefile deps. Run `make clean` after header changes.
-
-### Formatting
-
-```sh
-make format                     # uses .clang-format (tabs, 100-col, pointer-right)
-clang-format -i src/*.m src/*.h
+```objc
++ (NSData *)recvUntilHeadersDoneWithFD:(int)fd
+                              totalLen:(NSUInteger *)totalLen
+                             headerEnd:(NSUInteger *)headerEnd;
++ (HttpRequest *)parseHeadWithData:(NSData *)data headerEnd:(NSUInteger)headerEnd;
 ```
 
----
+### RouteHelpers (route_helpers.h)
 
-## 7. Testing
-
-**No automated test suite.** The audio path is manually verified via curl.
-
-```sh
-# Manual test sequence:
-make && ./verbatimd --log-level trace
-
-# In another terminal:
-curl http://127.0.0.1:5959/status
-curl http://127.0.0.1:5959/voices
-curl -N -X POST http://127.0.0.1:5959/ -d "Hello world"
-curl -X POST http://127.0.0.1:5959/stop
+```objc
++ (float)mapSpeedToRate:(int)speed;
++ (void)sendJSONResponseWithFD:(int)fd statusCode:(int)statusCode
+                    statusText:(NSString *)statusText object:(id)object;
++ (void)sendJSONErrorWithFD:(int)fd statusCode:(int)statusCode
+                 statusText:(NSString *)statusText message:(NSString *)message;
 ```
 
----
+### JSONWriter (json_writer.h)
 
-## 8. Key Design Decisions (Rationale)
+```objc
++ (nullable NSData *)serialize:(id)object;
+```
 
-| Decision                         | Why                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| 100% Objective-C (no C++)        | Eliminated the only C++ in speech_bridge (std::queue → NSCondition). Zero hidden deps.           |
-| No Swift runtime                 | Avoids the concurrency issue that motivated this rewrite (Swift Concurrency + speech callbacks). |
-| Thread-per-connection (NSThread) | Simple, no async framework, no thread pool overhead for a low-traffic local server.              |
-| CFRunLoop on main thread         | Required for NSSpeechSynthesizer delegate callbacks to fire. This is the whole point.            |
-| NSLock for engine state          | Same semantics as the old std::mutex. One utterance at a time, serialised access.                |
-| NSCondition for event queue      | Replaces std::condition_variable + std::queue. Push from delegate, blocking pull from HTTP.      |
-| NSJSONSerialization (no cJSON)   | Project only builds JSON, never parses it. Foundation already ships the writer for free.         |
-| Custom argp replacement          | argp is Homebrew-only on macOS. Own implementation is 200 lines, zero deps.                      |
-| NSTask for voice listing         | Replaced popen() with NSTask+NSPipe. Foundation API, more robust process management.             |
-| Heap-allocated ServerConfig      | Outlives main() for server thread lifetime.                                                      |
-| No test suite                    | Audio path requires real macOS + speakers. Curl-based manual verification.                       |
+### Voices (voices.h)
 
----
+```objc
++ (NSArray<VoiceInfo *> *)voicesList;
+```
 
-## 9. Known Limitations (By Design)
+## Configuration
+
+All configuration is via CLI flags (no config file, no env vars):
+
+| Flag          | Property   | Default     | Validation                |
+| ------------- | ---------- | ----------- | ------------------------- |
+| `--host`      | `host`     | `127.0.0.1` | Non-empty, ≤253 chars     |
+| `--port`      | `port`     | `5959`      | 1024–65535                |
+| `--rate`      | `rate`     | `175`       | 1–1000 WPM, not NaN       |
+| `--log-level` | `logLevel` | `info`      | Must be recognized string |
+
+`ServerConfig` is heap-allocated in `main.m` and passed to the HTTP server thread.
+
+## Build Pipeline
+
+1. Makefile auto-discovers `src/*.m` via `$(wildcard src/*.m)`
+2. Each `.m` compiled to `build/src/*.o` via `$(CC) $(MFLAGS) -c $< -o $@`
+3. All `.o` files linked into `verbatimd` via `$(CC) $(LDFLAGS) -o $@ $(OUT) $(LDLIBS)`
+4. No dependency tracking — `make clean` required after header changes
+
+## Runtime Model
+
+### Threads
+
+| Thread             | Purpose                                      | Lifetime       |
+| ------------------ | -------------------------------------------- | -------------- |
+| Main thread        | `CFRunLoopRun()` — speech delegate callbacks | Forever        |
+| HTTP server thread | `accept()` loop, spawns connection threads   | Forever        |
+| Connection threads | Read request, dispatch, write response       | Per-connection |
+
+### Synchronization primitives
+
+| Primitive                             | Purpose                         | Lock ordering   |
+| ------------------------------------- | ------------------------------- | --------------- |
+| `@synchronized(self)` on Logger class | Serialize log output            | Lowest priority |
+| `NSLock g_engine_lock`                | Guard speech engine state       | Acquired first  |
+| `NSCondition` in VerbatimEventQueue   | Producer/consumer event queue   | Acquired second |
+| `NSCondition g_threadCond`            | Throttle concurrent connections | Independent     |
+
+### Networking
+
+- TCP socket, IPv4, `SO_REUSEADDR`
+- `listen(16)` backlog
+- `accept()` loop, one `NSThread` per connection
+- `SO_RCVTIMEO` 30s on client sockets
+- `SIGPIPE` ignored — `EPIPE` handled at `send()` call site
+- No HTTP keep-alive (`Connection: close` always)
+
+## Error Handling
+
+- **POSIX errors:** `LOG_PERROR` includes `strerror(errno)`, logged at ERROR level
+- **HTTP errors:** JSON responses via `[RouteHelpers sendJSONErrorWithFD:...]` (400, 404, 500)
+- **Speech errors:** Terminal events pushed to session queue: `{"event":"error","message":"..."}`
+- **Socket errors:** `send()` failures logged as WARN, connection closed (non-fatal)
+- **Body truncation:** Requests with mismatched `Content-Length` rejected
+- **Oversized bodies:** `Content-Length` > 1 MB rejected immediately
+
+## Logging
+
+All output to stderr via `NSFileHandle`. Thread-safe via `@synchronized`. ANSI color auto-detected via `isatty`. Compile-time features: `LOG_SHOW_SOURCE_LOCATION`, `LOG_SHOW_TIME_STAMP`.
+
+## Memory Ownership
+
+- `ServerConfig` — heap-allocated in `main.m`, referenced by server thread. ARC-managed.
+- `NSSpeechSynthesizer` — global, guarded by `g_engine_lock`. Created per speak request, released when superseded or finished.
+- `VerbatimSpeechDelegate` — referenced by `g_delegate` while active, released when synth cleared.
+- `VerbatimSession` — created per `POST /` request, referenced by connection thread and global state. Released after stream ends.
+- `VerbatimEventQueue` — owned by `VerbatimSession` as ivar. Released with session.
+
+## External Dependencies
+
+| Dependency | Purpose                                                             |
+| ---------- | ------------------------------------------------------------------- |
+| Foundation | Core Objective-C runtime, JSON, string handling, threading          |
+| AppKit     | `NSSpeechSynthesizer` (only file: `speech_bridge.m`)                |
+| pthread    | Thread support (linked but not directly used — `NSThread` wraps it) |
+
+`speech_bridge.m` is the only file that requires AppKit. The rest of the codebase is Foundation-only in principle.
+
+## Known Limitations
 
 - **macOS only** — `NSSpeechSynthesizer` is an AppKit API. Will not compile on Linux.
 - **No HTTPS** — local development tool, binds to 127.0.0.1 only.
-- **No test suite** — speech pipeline requires real audio output.
-- **No env var support** — all config via CLI flags (explicit, reproducible).
+- **No test suite** — speech pipeline requires real audio output. Manual curl verification.
+- **No env var support** — all config via CLI flags.
 - **No hot reload of voices** — voice list cached at first `/voices` call, never refreshed.
-- **One utterance at a time** — new requests supersede current speech (by design, same as `say`).
+- **One utterance at a time** — new requests supersede current speech.
 - **`speech_bridge.m` cannot be tested in CI** — depends on AppKit, no mock path.
-- **`NSSpeechSynthesizer` deprecated in macOS 14.0** — Apple recommends `AVSpeechSynthesizer`. This project deliberately uses the older API for its delegate-based word timing.
+- **`NSSpeechSynthesizer` deprecated in macOS 14.0** — Apple recommends `AVSpeechSynthesizer`. This project uses the older API for its delegate-based word timing.
 - **No WebSocket** — NDJSON streaming via HTTP chunked encoding covers the use case.
-
----
-
-## 10. Files an Agent Might Need to Touch
-
-| Task                       | Files                                                                                                     |
-| -------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Add CLI flag               | `command_line.h` (property), `command_line.m` (parsing), `http_server.h` (ServerConfig)                   |
-| New HTTP endpoint          | `routes.h` (class method decl), `routes.m` (implementation), `http_server.m` (dispatch in NSThread block) |
-| Change speech event format | `speech_bridge.m` (delegate methods, push_event calls)                                                    |
-| Add log level              | `log.h` (enum + macro), `log.m` (colour handler in both default/color handlers)                           |
-| Modify voice parsing       | `voices.m` (NSTask + NSPipe, regex parse)                                                                 |
-| Change JSON output format  | `routes.m` or `route_speak.m` (NSDictionary literals passed to `[JSONWriter serialize:]`)                 |
-| Add HTTP response header   | `http_response.h/.m` (sendWithFD or beginChunkedWithFD)                                                   |
-| Modify event queue         | `verbatim_event_queue.h/.m` (VerbatimSession, VerbatimEventQueue)                                         |
-| Modify HTTP parsing        | `http_parse.h/.m` (recvUntilHeadersDone, parseHead)                                                       |
-
----
-
-## 11. Mental Model Checklist for Agents
-
-- [ ] macOS only — will not compile on Linux/CI
-- [ ] Main thread = CFRunLoop only — never touches I/O or networking
-- [ ] HTTP server thread = accept loop, spawns NSThread blocks per connection
-- [ ] One global NSSpeechSynthesizer, guarded by NSLock
-- [ ] One utterance at a time — new requests supersede previous
-- [ ] `sender != g_synth` identity check is load-bearing — do not remove
-- [ ] Event queue: push from delegate thread, blocking pull from HTTP thread
-- [ ] NSCondition, not NSLock, for the event queue (wait/signal semantics)
-- [ ] No JSON parsing — only JSON serialization (POST body is raw text)
-- [ ] No test suite — verify with `make && ./verbatimd` + curl
-- [ ] `make format` or `clang-format -i src/*.m src/*.h` after any edits
-- [ ] `NSSpeechSynthesizer` deprecation warnings are expected — this is the API we wrap
-
----
-
-## 12. Quick Commands
-
-```sh
-# show available targets and build options
-
-make help
-
-# Build release
-make
-
-# Build debug (ASan + UBSan)
-make debug
-
-# Run
-./verbatimd
-./verbatimd --host 0.0.0.0 --port 8080
-./verbatimd --log-level trace
-
-# Install
-make install                          # /usr/local/bin
-make install PREFIX="$HOME/.local"    # ~/.local/bin
-
-# Format
-make format                           # or: clang-format -i src/*.m src/*.h
-
-# Manual test
-curl http://127.0.0.1:5959/status
-curl http://127.0.0.1:5959/voices
-curl -N -X POST http://127.0.0.1:5959/ -d "Hello world, this is verbatim."
-curl -X POST http://127.0.0.1:5959/stop
-```
-
----
-
-_Generated from codebase inspection. Update when architecture changes._
+- **No HTTP keep-alive** — every request opens and closes a TCP connection.
