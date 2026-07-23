@@ -96,17 +96,17 @@ static BOOL     _initialized = NO;            // guards against use before +init
 {
 	switch (level) {
 	case LogLevelFatal:
-		return [NSString stringWithFormat:@"%@FATAL%@", kColorBoldBlue, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F480 %@FATAL%@", kColorBoldBlue, kColorReset];
 	case LogLevelError:
-		return [NSString stringWithFormat:@"%@ERROR%@", kColorBoldRed, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F6A8 %@ERROR%@", kColorBoldRed, kColorReset];
 	case LogLevelWarn:
-		return [NSString stringWithFormat:@"%@WARN %@", kColorBoldYellow, kColorReset];
+		return [NSString stringWithFormat:@"\u26A0\uFE0F  %@WARN %@", kColorBoldYellow, kColorReset];
 	case LogLevelInfo:
-		return [NSString stringWithFormat:@"%@INFO %@", kColorBoldGreen, kColorReset];
+		return [NSString stringWithFormat:@"\u2139\uFE0F  %@INFO %@", kColorBoldGreen, kColorReset];
 	case LogLevelDebug:
-		return [NSString stringWithFormat:@"%@DEBUG%@", kColorBoldCyan, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F6E0\uFE0F  %@DEBUG%@", kColorBoldCyan, kColorReset];
 	case LogLevelTrace:
-		return [NSString stringWithFormat:@"%@TRACE%@", kColorBoldMagenta, kColorReset];
+		return [NSString stringWithFormat:@"\U0001F52C %@TRACE%@", kColorBoldMagenta, kColorReset];
 	default:
 		return [NSString stringWithFormat:@"%@UNKWN%@", kColorBoldBlue, kColorReset];
 	}
